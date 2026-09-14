@@ -1,0 +1,24 @@
+[package]
+name = "sanitize"
+version = "0.1.0"
+edition = "2024"
+description = "Recursive secure deletion that tells you the truth about what it destroyed"
+license = "MIT"
+repository = "https://github.com/streamx3/sanitize"
+
+[dependencies]
+clap = { version = "4.6.4", features = ["derive"] }
+libc = "0.2.189"
+rand = "0.10.2"
+rand_chacha = "0.10.0"
+rustix = { version = "1.1.4", features = ["fs", "process", "thread"] }
+
+# §16.1 — the program does not crash. These are structural, not stylistic.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[profile.release]
+panic = "abort"
+opt-level = 3
