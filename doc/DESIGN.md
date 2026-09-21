@@ -1054,6 +1054,10 @@ immediately. Pretending otherwise is precisely the overclaim this project exists
 
 ### 16.6 Configuration precedence
 
+The complete flag and config-key reference, with the authority rules, lives in
+[REFERENCE.md](REFERENCE.md). Scope settings — those that change *which* bytes are destroyed —
+have no config keys at all; see REFERENCE.md §0.
+
 ```
 hardcoded defaults  <  /etc/sanitize/default.conf  <  user input (CLI)
 ```

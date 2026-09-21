@@ -243,19 +243,25 @@ already makes for skipped entries. DESIGN §16.7.
 
 ### 22. Config file — P2
 
+Full specification in [REFERENCE.md](REFERENCE.md) §5, including the scope/thoroughness split
+that makes `force_everything` structurally inexpressible in config.
+
 `hardcoded < /etc/sanitize/default.conf < CLI`. Flat `key = value`, parsed in-tree, no TOML
 dependency. Every destructive run prints which layers were in effect and where each non-default
 setting came from. DESIGN §16.6.
 
 ### Open questions
 
-- **`-f` vs `-F`.** DESIGN §16.3 reserves `-f` for shred compatibility (chmod only); `-F` is
-  force-everything. `sanitize -f /` as written would still be refused — `-f` does not bypass the
-  root guard today. Decide whether the warn-and-wait skip binds to `-F`, to a new flag, or whether
-  `-f` is being redefined and shred compatibility dropped.
+Tracked in [REFERENCE.md](REFERENCE.md) §8; the `-f` vs `-F` question is resolved there (§4.1 —
+both stay, in different categories).
+
+- **~~`-f` vs `-F`~~ — resolved.** Both stay, in different categories: `-f` is thoroughness
+  (config-legal, chmod only, keeps shred compatibility), `-F` is scope (command-line-only, and
+  now defined as a pure alias for the five scope flags plus `-f`). The warn-and-wait skip binds
+  to a new `--yes`, not to either of them. REFERENCE.md §4.1.
 - **Warn-and-wait is new.** No prompt or countdown exists anywhere in `src/` today; dangerous paths
-  are refused outright (exit 3) and `-F` is documented as "no prompt, no countdown". Adding a gate
-  changes the §16.3 contract — confirm the intended interaction.
+  are refused outright (exit 3) and `-F` is documented as "no prompt, no countdown". REFERENCE.md
+  §3.1 narrows that to "no prompt *once the target is permitted*" — confirm that reading.
 - **Config file trust.** Orthogonal to §16.4: the aggression principle is about not
   second-guessing *the user*, whereas a group- or world-writable `/etc/sanitize/default.conf` lets
   a *third party* rewrite someone else's invocation. Suggest refusing a config that is not owned by

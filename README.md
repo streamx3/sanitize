@@ -20,6 +20,9 @@ implemented and tested. Filesystem/device detection (`--explain`, the `purge` gu
 privilege escalation are not yet — see [doc/TODO.md](doc/TODO.md) for everything outstanding
 and `doc/DESIGN.md` §12 for the roadmap.
 
+Every flag and config key, with the rules governing which of them a config file may set, is in
+[doc/REFERENCE.md](doc/REFERENCE.md).
+
 ## Why not `shred` / `wipe` / `srm`
 
 See `doc/COMPARISON.md`. Briefly: `shred` isn't recursive and ignores directories; `wipe` and `srm`
