@@ -170,9 +170,19 @@ between this repo and a block-level tool.
 | 7 | `F_NOCACHE` / `posix_fadvise(DONTNEED)` actually bypasses the page cache | passes coalesce and only the last one lands |
 | 8 | Writes to the same LBA reach the same physical location | false on **all** flash — this is §2 of DESIGN.md and why `purge` is never claimed |
 
-Assumptions 1–4 are FAT/exFAT-specific and therefore the highest-value experiments for this
-project, since FAT/exFAT are the priority filesystems. Each is a loopback image, a hex dump before,
-an operation, and a hex dump after. They belong in the same CI job as TODO P1.5.
+**Which of these are testable, and how.** The split matters, because half of them are ordinary
+automated tests and half cannot be settled in software at all.
+
+| Rows | Testable? | How |
+|---|---|---|
+| 1–3 | **Automated.** | Loopback FAT32/exFAT image, `xxd` the directory region, run the operation, `xxd` again, assert on the bytes. Pure CI work; belongs in the same job as TODO P1.5. |
+| 4 (8.3 alias) | **Automated per OS, but needs a manual cross-OS matrix.** | Alias generation on rename is driver behaviour: Linux `vfat`, macOS `msdos`, Windows FASTFAT may each differ. The Linux leg automates like 1–3. macOS and Windows need a real volume written by that OS and inspected by hand, then the result recorded here. Until all three legs exist, the answer is per-driver, not general. |
+| 5–6 (`fsync` reaches media; drive honours FLUSH/FUA) | **Not testable in software.** | Proving a write reached the platter rather than the drive's cache needs a power cut mid-write, or a bus analyser. No host-side test can distinguish them. |
+| 7 (`F_NOCACHE` bypasses page cache) | **Measurable, not provable.** | Timing and `/proc` accounting give strong evidence; neither is proof. |
+| 8 (same LBA → same physical page) | **Not testable without vendor tooling**, and already known false on flash. This is DESIGN §2 and the reason `purge` is never claimed. |
+
+That 5–8 cannot be tested is not a gap to close. It is the boundary of what a userspace tool can
+honestly assert, and the reason `Guarantee::Unverifiable` exists.
 
 ---
 
@@ -240,9 +250,13 @@ Ordered by how much the answer would change the design.
 1. **§4 rows 1–4**, on loopback FAT32 and exFAT images, with hex dumps of the directory region
    before and after each step. Row 3 in particular decides whether the ladder's first step — the
    one the whole §5.2 design rests on — does anything at all.
-2. **The 8.3 alias question** (§2.1). If a mangled original name survives every rename, name
-   obfuscation on FAT32 is substantially weaker than DESIGN §5 claims, and the claim must be
-   corrected rather than the design defended.
+2. **The 8.3 alias question** (§2.1) — **manual, cross-OS**. If a mangled original name survives
+   every rename, name obfuscation on FAT32 is substantially weaker than DESIGN §5 claims, and the
+   claim must be corrected rather than the design defended. Automate the Linux `vfat` leg; the
+   macOS `msdos` and Windows FASTFAT legs need a volume written and inspected by hand on that OS,
+   because alias generation is driver behaviour and the three may disagree. Record each driver's
+   result in §2.1 as it is established — a per-driver answer is the only honest one until all three
+   are in.
 3. **The forensic canary test** (DESIGN §11, TODO P1.5): known string, sanitize, grep the raw
    image. Then the same on btrfs, asserting the canary **is** present, documenting where the
    guarantee does not hold.

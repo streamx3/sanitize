@@ -406,7 +406,11 @@ across an NFS mount is both slow and guarantee-free.
 
 ### 7.4 Root guards
 
-Refuse without `--allow-dangerous-root`: `/`, `/Users`, `/home`, `$HOME` itself, `/System`,
+> **Superseded — see REFERENCE.md §1.1 and §3.1.** `--allow-dangerous-root` was never built and
+> no longer exists as a proposal. `/` alone refuses outright, gated by `--no-preserve-root`; every
+> other path below warns and waits instead of refusing. The list itself is unchanged.
+
+Guard the following: `/`, `/Users`, `/home`, `$HOME` itself, `/System`,
 `/Applications`, `/usr`, `/etc`, `/var`, `/private`, any mount point root, and any path
 whose subtree exceeds a configurable file count without `-I` confirmation. Also refuse if the
 target resolves to a path containing `..` after canonicalisation at open time.

@@ -104,18 +104,21 @@ None of these may ever appear in a config file. Each can destroy something the u
 | Flag | Default | Effect | Status |
 |---|---|---|---|
 | `--no-preserve-root` | off | Permit `/` itself as a target. Long-only, no short form, exactly as `rm`. | **new** |
-| `--allow-dangerous-path` | off | Permit the rest of the refused set: `/usr`, `/etc`, `/home`, `/Users`, `/Volumes`, `/System`, `$HOME`, … (full list in `guards.rs`). | **new** |
 | `--follow-symlinks` | off | Destroy symlink *targets*, not just the links. Cycle-safe via a visited `(st_dev, st_ino)` set. | **new** (today: reachable only via `-F`) |
 | `--no-one-file-system` | off | Descend across mount points, partitions and drives. | **shipped** |
 | `--hard-links=shred` | `skip` | Destroy content reachable under another name outside the tree. | **shipped** |
-| `-F`, `--force-everything` | off | Alias for all five above, plus `-f`. Nothing else. | **shipped** (semantics narrow slightly) |
+| `-F`, `--force-everything` | off | Alias for all four above, plus `-f` and `--yes`. Nothing else. | **shipped** (semantics narrow slightly) |
 
 ### 1.1 Why each one is scope, not thoroughness
 
-- **`--no-preserve-root` / `--allow-dangerous-path`** — expand the target set by definition.
-  Split into two flags because `/` is categorically worse than `/usr`, and because `rm`'s
-  vocabulary is already in everyone's fingers. Neither is config-settable: as you put it, that is
-  too important, and a shell script is the right place to automate it.
+- **`--no-preserve-root`** — the one acknowledged special case in this taxonomy. It does not add
+  bytes you did not name: if you typed `/`, you named `/`. By the letter of §0 it is therefore
+  ceremony, not scope. It is a command-line-only flag anyway, on consequence rather than category:
+  `rm -rf $FOO/` with `$FOO` unset is the classic disaster, `/` is where it lands, and that one
+  case is worth a gate that a config file cannot open. Every *other* dangerous path is handled by
+  warn-and-wait instead — see §3.1. There is no `--allow-dangerous-path`, and there should not be:
+  the guard list is exact-match and already bypassable by a shell glob, so it is a typo guard, not
+  a security boundary, and a typo guard is exactly what a confirmation prompt is for.
 - **`--follow-symlinks`** — the escalation that motivated this whole section. A symlink planted
   inside a tree you are about to sanitize redirects destruction anywhere the link points. Note the
   precondition is *write access to a directory you were going to destroy anyway* — far weaker than
@@ -132,11 +135,10 @@ None of these may ever appear in a config file. Each can destroy something the u
 `-F` is defined as exactly:
 
 ```
---no-preserve-root --allow-dangerous-path --follow-symlinks --no-one-file-system \
---hard-links=shred -f
+--no-preserve-root --follow-symlinks --no-one-file-system --hard-links=shred -f --yes
 ```
 
-No other behaviour is attached to it. It is command-line-only because five of its six members are.
+No other behaviour is attached to it. It is command-line-only because four of its six members are.
 The consequence recorded in DESIGN.md §16.3 is unchanged: `sudo sanitize -F /` destroys every
 mounted volume reachable from the tree. That remains the documented purpose of the flag.
 
@@ -202,10 +204,16 @@ residue classes share that property, which is why they share a category.
 
 Warn-and-wait is new; nothing in `src/` prompts today. The intended model:
 
-- A dangerous *target* still refuses outright unless the matching §1 flag is given. A prompt is not
-  a substitute for that flag.
-- Once the target is permitted, a run above the `-I` threshold warns and waits.
+- `/` refuses outright without `--no-preserve-root`. A prompt is not a substitute for that flag.
+- Every **other** dangerous path (`/usr`, `/etc`, `$HOME`, `/Volumes`, … — the `guards.rs` list)
+  warns and waits, naming the path. This replaces the `--allow-dangerous-path` flag of the first
+  draft: the guard is exact-match and a shell glob walks straight past it, so it was never a
+  boundary — it is a "did you mean this?", and that is a prompt's job.
+- A run above the `-I` threshold also warns and waits.
 - `--yes` skips the wait. `assume_yes = true` in config skips it for every run.
+- **If stdin is not a TTY and `--yes` was not given, refuse (exit 3).** Never treat a
+  non-interactive stream as consent. A script that was safe because it stopped at a prompt must not
+  become destructive because nobody was there to answer.
 
 **This is the setting that solves the leaving-a-building case.** It is pure ceremony — it changes
 nothing about which bytes die — so it is config-legal with no caveats, and needs none of the scope
@@ -290,15 +298,23 @@ sanitize: config: command line (--no-scrub-times, --follow-symlinks)
 A destructive tool that can be silently reconfigured is a destructive tool that can silently lie
 about what it did — the same defect class as printing "securely erased".
 
-### 5.5 Trust — needs a decision, see §8
+### 5.5 Trust — decided: `/etc/sanitize/` is trusted, no checks
 
-Recommendation: refuse a config file that is group- or world-writable, or not owned by root (for
-`/etc`) or the invoking user (for `--config`). Report the refusal; do not ignore it silently.
+An earlier draft recommended refusing a group- or world-writable config. **Dropped**, for a reason
+that defeats it outright:
 
-Note this is *not* the paternalism §16.4 rejects. That principle is about not second-guessing **the
-operator**. This is about a **third party** rewriting the operator's invocation. Given §0.2, the
-stakes are now low — a hijacked config cannot redirect destruction — so this is hygiene rather than
-a security control.
+> Anyone who can write `/etc/sanitize/default.conf` can replace the `sanitize` binary. A
+> permission check on the config protects nothing an attacker with that access has not already
+> bypassed.
+
+The only scenario it would catch is `/etc/sanitize/` left world-writable by a broken install — a
+system misconfiguration, not this tool's to police. And by §0.2 the payload is now bounded anyway:
+a hijacked config cannot reach a scope key, so the worst it achieves is skipping a prompt or
+leaving residue unscrubbed.
+
+So: the config is read and trusted. What stays is §5.4 **disclosure** — not as a security control,
+but because an operator who forgot they set `scrub_volume = false` needs to see it in the output of
+the run that relied on it.
 
 ---
 
@@ -319,8 +335,8 @@ a security control.
    — the behaviour is reachable *only* through `-F`. Needs its own flag before `-F` can be defined
    as an alias.
 2. **`guards.rs::check()` takes `force_everything: bool`.** It needs a scope-permission set
-   instead, so `--no-preserve-root` and `--allow-dangerous-path` can be honoured independently.
-   Today `-F` is the only bypass.
+   instead, so `--no-preserve-root` can be honoured independently and the rest of the list can
+   fall through to warn-and-wait. Today `-F` is the only bypass.
 3. **DESIGN.md §7.4 contradicts §16.3.** §7.4 names `--allow-dangerous-root`; §16.3 says `-F` is
    required and sufficient; the code implements §16.3. §16 supersedes, so §7.4 should be corrected
    to reference the §1 flags of this document.
@@ -335,18 +351,21 @@ a security control.
 
 ## 8. Open questions
 
-1. **`--hard-links=shred` as scope.** It is the weakest member of §1: the bytes are inside the
-   tree, only the consequence reaches outside. If it is demoted to thoroughness it becomes
-   config-legal. Recommendation: keep it in scope, on the grounds that a user cannot predict from
-   their command line that a file elsewhere will be emptied.
-2. **Conservative-direction config for scope keys.** A refinement: let config set
-   `hard_links = skip|warn` (shrinking) but never `shred` (expanding). This generalises to "config
-   may move scope conservatively". It is more expressive but replaces a rule you can state in one
-   sentence with one you cannot. Recommendation: skip it; keep §0 simple.
-3. **Config trust.** §5.5 needs sign-off.
-4. **Per-user config layer.** Only three layers are specified. Whether
-   `~/.config/sanitize/config` sits between `/etc` and the command line is undecided. It would be
-   the natural home for `assume_yes`, since that is a per-operator preference rather than a
-   machine policy.
-5. **`--allow-dangerous-path` granularity.** Currently all-or-nothing over the whole refused list.
-   A `--allow-dangerous-path=/usr` form would be safer but more to build and more to explain.
+Resolved since the first draft, recorded so the reasoning is not relitigated:
+
+| Was open | Resolved |
+|---|---|
+| `--hard-links=shred` as scope | **Moot on the priority filesystems** — FAT32/exFAT have no hard links, so the setting is a no-op there. Stays in §1 as scope for ext4/NTFS/APFS; revisit when those become a target, not before. |
+| Config trust | **Trust it.** §5.5. |
+| Per-user `~/.config` layer | **No.** Two layers plus the command line; no third. |
+| `--allow-dangerous-path` granularity | **Flag removed entirely.** Warn-and-wait covers the list; `/` keeps its own gate. §1.1, §3.1. |
+| `-f` vs `-F` | **Both stay**, in different categories. §4.1. |
+
+Still open:
+
+1. **Symlink policy, deferred by decision.** FAT32/exFAT have no symlinks, so the question does not
+   arise on the priority filesystems. `--follow-symlinks` stays specified and unbuilt until a
+   stable FAT-first release exists; the right semantics are then argued on their own merits rather
+   than inherited from `-F`.
+2. **What warn-and-wait actually looks like.** A `y/N` read, a typed confirmation, or a countdown.
+   The non-TTY rule in §3.1 matters more than the shape.

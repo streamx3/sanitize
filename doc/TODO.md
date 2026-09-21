@@ -270,23 +270,26 @@ claims need correcting rather than defending.
 
 ### Open questions
 
-Tracked in [REFERENCE.md](REFERENCE.md) §8; the `-f` vs `-F` question is resolved there (§4.1 —
-both stay, in different categories).
+Mostly resolved 2026-09-21; see [REFERENCE.md](REFERENCE.md) §8 for the table and the reasoning.
 
-- **~~`-f` vs `-F`~~ — resolved.** Both stay, in different categories: `-f` is thoroughness
-  (config-legal, chmod only, keeps shred compatibility), `-F` is scope (command-line-only, and
-  now defined as a pure alias for the five scope flags plus `-f`). The warn-and-wait skip binds
-  to a new `--yes`, not to either of them. REFERENCE.md §4.1.
-- **Warn-and-wait is new.** No prompt or countdown exists anywhere in `src/` today; dangerous paths
-  are refused outright (exit 3) and `-F` is documented as "no prompt, no countdown". REFERENCE.md
-  §3.1 narrows that to "no prompt *once the target is permitted*" — confirm that reading.
-- **Config file trust.** Orthogonal to §16.4: the aggression principle is about not
-  second-guessing *the user*, whereas a group- or world-writable `/etc/sanitize/default.conf` lets
-  a *third party* rewrite someone else's invocation. Suggest refusing a config that is not owned by
-  root (for `/etc`) or not `0644`-or-tighter, and reporting the refusal rather than ignoring it.
-  Needs a decision.
-- **Per-user config layer.** Only three layers were specified. Whether `~/.config/sanitize/config`
-  sits between `/etc` and the CLI is undecided.
+- ~~`-f` vs `-F`~~ — both stay, different categories.
+- ~~Config trust~~ — `/etc/sanitize/` is read and trusted. A permission check protects nothing:
+  anyone who can write it can replace the binary.
+- ~~Per-user config layer~~ — no. Hardcoded, `/etc`, command line. Three layers, no more.
+- ~~`--allow-dangerous-path`~~ — flag dropped. `/` keeps a hard gate (`--no-preserve-root`);
+  every other dangerous path warns and waits. The guard is exact-match and a shell glob walks
+  past it, so it was a typo guard all along, and a prompt is what a typo guard should be.
+- ~~`--hard-links=shred` as scope~~ — moot on FAT32/exFAT, which have no hard links. Revisit
+  with ext4/NTFS/APFS, not before.
+
+Still open:
+
+- **Symlink policy**, deferred by decision until a stable FAT-first release exists. FAT32/exFAT
+  have no symlinks, so nothing on the priority path depends on it.
+- **The shape of warn-and-wait** (`y/N`, typed confirmation, countdown). The non-TTY rule matters
+  more: stdin not a TTY and no `--yes` must refuse (exit 3), never proceed.
+
+---
 
 ## Publishing checklist (crates.io)
 
