@@ -140,6 +140,20 @@ pub struct Cli {
     )]
     pub hard_links: HardLinkMode,
 
+    // ---- metadata and residue (§16.5) ----------------------------------
+    /// Keep the real atime/mtime instead of scrubbing them before unlinking
+    #[arg(long = "no-scrub-times")]
+    pub no_scrub_times: bool,
+
+    /// Do not truncate to zero before unlinking (leaves size and first
+    /// cluster recoverable in the directory entry on FAT/exFAT)
+    #[arg(long = "no-truncate")]
+    pub no_truncate: bool,
+
+    /// Keep sidecar and cache files: ._* AppleDouble, .DS_Store, Thumbs.db
+    #[arg(long = "no-scrub-sidecars")]
+    pub no_scrub_sidecars: bool,
+
     // ---- reporting -----------------------------------------------------
     /// Emit one JSON object per path plus a summary
     #[arg(long = "json")]
@@ -165,6 +179,9 @@ pub struct Config {
     pub one_file_system: bool,
     pub follow_symlinks: bool,
     pub hard_links: HardLinkMode,
+    pub scrub_times: bool,
+    pub truncate_before_unlink: bool,
+    pub scrub_sidecars: bool,
     pub json: bool,
     pub same_length_rounds: usize,
     pub max_rename_steps: usize,
@@ -217,6 +234,12 @@ impl Config {
             // §16.2/§16.3: never follow by default; -F follows and destroys targets.
             follow_symlinks: cli.force_everything,
             hard_links: cli.hard_links,
+            // §16.5 — all on by default; each has a --no- inverse. These are
+            // not extra destruction, they are the destruction already asked
+            // for, finished properly.
+            scrub_times: !cli.no_scrub_times,
+            truncate_before_unlink: !cli.no_truncate,
+            scrub_sidecars: !cli.no_scrub_sidecars,
             json: cli.json,
             same_length_rounds: 2,
             max_rename_steps: 16,

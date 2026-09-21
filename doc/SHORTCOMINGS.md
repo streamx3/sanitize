@@ -15,10 +15,13 @@
 
 ## 0. Verification status — read this before trusting anything below
 
-**Nothing in this document is proven.** All 42 tests are unit tests of pure functions (size
-parsing, name invariants, extent planning). Every destructive behaviour was verified by hand once,
-during the v0.1 session, and is captured nowhere. The forensic loopback test that would demonstrate
-an overwrite reaches the media (DESIGN §11, TODO P1.5) is unwritten.
+**Most of this document is still unproven.** As of the residue work there are 47 unit tests of
+pure functions (size parsing, name invariants, extent planning, timestamp bounds) plus 8
+integration tests in `tests/residue.rs` that drive the real binary against real directories and
+cover the §16.5 chain. Everything *else* destructive — symlink policy, hard links, the rename
+ladder's effect on disk, exit codes — was verified by hand once during the v0.1 session and is
+captured nowhere. The forensic loopback test that would demonstrate an overwrite reaches the media
+(DESIGN §11, TODO P1.5) is still unwritten, so no claim below about *media* is tested at all.
 
 So each claim below is one of:
 
@@ -316,6 +319,12 @@ This is deliberate — it wipes the file's own tail slack — and `-x/--exact` d
 not documented as a cost anywhere, and on the priority filesystems it is the difference between a
 fast run and a slow one.
 
+A consequence found by writing the integration test: `pwrite` past EOF **extends the file**, since
+that is how the tail of the last block is reached. For a deleted file this is invisible, but under
+`-k` it meant a kept 30-byte file came back as a 4 KiB one. The file is now truncated back to its
+original length after the slack wipe — the overwritten bytes stay on the media, they simply stop
+being part of the file — and `keep_neither_truncates_nor_scrubs_times` guards it.
+
 ### 8.5 Mount-point roots are not guarded, contrary to DESIGN §7.4
 
 §7.4 lists "any mount point root" among the paths to guard. `guards.rs` does not implement it:
@@ -349,11 +358,19 @@ achieved and the help text should not imply it is.
 but no flag or key reaches them today. Low priority; noted so it is not mistaken for a deliberate
 omission.
 
+### 8.9a Residue accounting depends on readdir order
+
+In a whole-directory run a sidecar may be reached either by its principal (counted as residue) or
+by the listing (counted as an ordinary file), depending on the order `readdir` happens to return
+them. Everything is destroyed either way and the totals are correct; only the attribution between
+the two counters moves. Cosmetic, but it means "residue: 0 scrubbed" does not imply there were no
+sidecars.
+
 ### 8.9 The tree is not green
 
-`cargo clippy -- -D warnings` **fails** (dead code, `sysx.rs:101`) and `cargo fmt --check` **fails**
-(36 diffs across 6 files). TODO P1.7 asks for CI running both; as things stand that CI would be red
-on its first run. Fix before adding the workflow, not after.
+~~`cargo clippy -- -D warnings` fails (dead code, `sysx.rs:101`) and `cargo fmt --check` fails (36
+diffs across 6 files).~~ **Fixed.** Both are clean as of the residue work, so TODO P1.7's CI has
+something that can pass on its first run. The workflow itself still does not exist.
 
 ### 8.10 Documentation has outrun the code
 

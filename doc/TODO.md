@@ -14,7 +14,10 @@ These matter disproportionately because the entire pitch of this tool is that it
 does not overclaim. A tool that misreports its own capabilities fails at the one
 thing that distinguishes it from `wipe`.
 
-### 1. `--explain` is advertised in output but does not exist
+### 1. `--explain` is advertised in output but does not exist — **text removed**
+
+> The misleading clause is gone from `report.rs`; the flag itself still waits on `fsinfo`.
+
 
 Every run that overwrites anything ends with:
 
@@ -187,6 +190,8 @@ Ordered by value per line of code.
 
 ### 16. Truncate to 0 before unlink — P0
 
+> **DONE.** `walk.rs::wipe_truncate_scrub`. Verified with strace: `pwrite → fdatasync → ftruncate(0) → utimensat → renameat2 ×12 → unlinkat`.
+
 ~5 lines. `ftruncate(fd, 0)` after `wipe_fd`'s final `full_sync`, before `close`, gated on
 `!cfg.keep`. Today the residual FAT32 dirent keeps `DIR_FileSize` (0x1C) and the first cluster
 (0x14/0x1A) — the exact size and a pointer to where the data began. exFAT: `DataLength`,
@@ -199,12 +204,16 @@ loopback image — this is P1.5's forensic test and it is what proves the change
 
 ### 17. `--scrub-times`, on by default — P0
 
+> **DONE.** `meta::scrub_times`, after truncation per §16.5. Random in `[1980-01-01, now]`; the FAT epoch floor is unit-tested.
+
 Inverse is `--no-scrub-times`. `utimensat` on `atime`/`mtime` before unlink. **Not** the Unix
 epoch: FAT's epoch starts 1980-01-01, so `0` clamps and the clamp is itself a signature. Random
 value in a plausible window. Create time unsettable from POSIX — macOS `setattrlist(ATTR_CMN_CRTIME)`,
 Linux reports it as unfixable residue. DESIGN §9.4 designed this; nothing in `src/` implements it.
 
 ### 18. AppleDouble sidecars — P0
+
+> **DONE.** `meta::sidecar_of` + `walk.rs::scrub_sidecar_of`, processed before the principal. The single-file leak is closed and guarded by `sidecar_dies_with_its_principal`.
 
 `._<name>` carries `com.apple.quarantine` (source URL, timestamp, downloading app) on FAT/exFAT,
 where macOS has no native xattrs. **The sidecar's own filename contains the principal's name**,
@@ -215,6 +224,8 @@ the file and holding its download URL. Whole-directory runs already destroy it i
 Process the sidecar *before* its principal.
 
 ### 19. `--scrub-sidecars`, on by default — P1
+
+> **DONE.** `.DS_Store`, `Thumbs.db`, `ehthumbs.db`, `desktop.ini` via `meta::CACHE_FILES`.
 
 `.DS_Store`, `Thumbs.db`, `ehthumbs.db`, `desktop.ini` in any directory touched. `.DS_Store` is a
 buddy-allocated B-tree that does not compact, so it **retains records for files already deleted** —
@@ -236,6 +247,8 @@ Must run **last** (our own unlinks generate the records we are removing) and can
 mounted — see §16.5.1. Needs volume-root identification, a subset of the `fsinfo` work in P2.9.
 
 ### 21. Residue reporting — P1
+
+> **PARTLY DONE.** `scrubbed` and `present, not scrubbed` are implemented and drive exit 1; `not_checked` exists but has no caller until `--scrub-volume` lands.
 
 Three states per residue class: `scrubbed` / `present, not scrubbed` (with reason) / `not checked`.
 Unscrubbed residue referencing a destroyed path sets exit 1, by the same argument `main.rs:75`

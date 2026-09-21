@@ -160,8 +160,8 @@ These change how completely the chosen bytes die. None can add a path to the des
 | `-s N`, `--size N` | — | — | **shipped** (alias for `--head`) |
 | `--random-source FILE` | CSPRNG | `random_source` | **shipped** |
 | `--no-recursive` | recursive | `recursive` | **shipped** |
-| `--no-scrub-times` | scrubbing on | `scrub_times` | **new** |
-| `--no-truncate` | truncating on | `truncate_before_unlink` | **new** |
+| `--no-scrub-times` | scrubbing on | `scrub_times` | **shipped** |
+| `--no-truncate` | truncating on | `truncate_before_unlink` | **shipped** |
 | `--scrub-dirents` | off | `scrub_dirents` | **designed** (DESIGN §5.4) |
 | `--verify` | off | `verify` | **designed** |
 | `--range A:B` | — | — | **designed** (DESIGN §4.2) |
@@ -178,7 +178,7 @@ Bounded and enumerable (`SHORTCOMINGS.md` §1.1), but outside the named target. 
 
 | Flag | Default | Config key | Status |
 |---|---|---|---|
-| `--no-scrub-sidecars` | scrubbing on | `scrub_sidecars` | **new** |
+| `--no-scrub-sidecars` | scrubbing on | `scrub_sidecars` | **shipped** |
 | `--no-scrub-volume` | scrubbing on | `scrub_volume` | **new** |
 
 Even the AppleDouble sidecar escapes the named path when the target is a single *file*:

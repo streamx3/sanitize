@@ -77,6 +77,12 @@ pub struct Report {
     pub json: bool,
     pub verbose: u8,
     problems: Vec<(String, String)>,
+    /// §16.7 — residue is reported in three states, never two. Silence is
+    /// indistinguishable from success, so "we found nothing" and "we never
+    /// looked" must not produce the same output.
+    pub residue_scrubbed: u64,
+    residue_unscrubbed: Vec<(String, String)>,
+    residue_not_checked: Vec<String>,
 }
 
 impl Report {
@@ -94,7 +100,31 @@ impl Report {
             json,
             verbose,
             problems: Vec::new(),
+            residue_scrubbed: 0,
+            residue_unscrubbed: Vec::new(),
+            residue_not_checked: Vec::new(),
         }
+    }
+
+    /// Found it, destroyed it.
+    pub fn note_residue_scrubbed(&mut self, path: &str) {
+        self.residue_scrubbed = self.residue_scrubbed.saturating_add(1);
+        if self.verbose > 0 {
+            let _ = writeln!(std::io::stderr(), "scrubbed residue {path}");
+        }
+    }
+
+    /// Found it, did not destroy it — always with the reason. This is the
+    /// state most tools collapse into silence.
+    pub fn note_residue_unscrubbed(&mut self, path: &str, reason: &str) {
+        self.residue_unscrubbed
+            .push((path.to_string(), reason.to_string()));
+    }
+
+    /// Did not look. Distinct from finding nothing, and reported as such.
+    #[allow(dead_code)]
+    pub fn note_residue_not_checked(&mut self, what: &str) {
+        self.residue_not_checked.push(what.to_string());
     }
 
     fn note_guarantee(&mut self, g: Guarantee) {
@@ -204,14 +234,17 @@ impl Report {
     /// True if anything the user asked to destroy is still there. Drives the
     /// exit code: 0 means the job is done, not merely that nothing crashed.
     pub fn incomplete(&self) -> bool {
-        self.failed > 0 || self.skipped > 0
+        // §16.7 — residue we found and left behind is the same kind of
+        // incompleteness as a skipped entry: the job is not done, and a
+        // script that reads exit 0 as "done" would be misled.
+        self.failed > 0 || self.skipped > 0 || !self.residue_unscrubbed.is_empty()
     }
 
     /// Always printed, including after SIGINT. §16.1 item 5.
     pub fn summary(&self, dry_run: bool) {
         if self.json {
             let line = format!(
-                "{{\"summary\":true,\"files\":{},\"dirs\":{},\"symlinks\":{},\"wiped_only\":{},\"planned\":{},\"skipped\":{},\"failed\":{},\"bytes_written\":{},\"guarantee\":\"{}\"}}",
+                "{{\"summary\":true,\"files\":{},\"dirs\":{},\"symlinks\":{},\"wiped_only\":{},\"planned\":{},\"skipped\":{},\"failed\":{},\"bytes_written\":{},\"guarantee\":\"{}\",\"residue_scrubbed\":{},\"residue_unscrubbed\":{},\"residue_not_checked\":{}}}",
                 self.removed_files,
                 self.removed_dirs,
                 self.removed_symlinks,
@@ -220,7 +253,10 @@ impl Report {
                 self.skipped,
                 self.failed,
                 self.bytes_written,
-                self.weakest.map(Guarantee::as_str).unwrap_or("none")
+                self.weakest.map(Guarantee::as_str).unwrap_or("none"),
+                self.residue_scrubbed,
+                self.residue_unscrubbed.len(),
+                self.residue_not_checked.len()
             );
             let _ = writeln!(std::io::stdout(), "{line}");
             return;
@@ -256,6 +292,25 @@ impl Report {
                 self.skipped,
                 self.failed
             );
+        }
+
+        // §16.7 — three states, never two. A scrubbed count alone would let
+        // "nothing was there" and "we never looked" print identically.
+        if self.residue_scrubbed > 0 {
+            let _ = writeln!(
+                err,
+                "sanitize: residue: {} sidecar/cache file(s) scrubbed",
+                self.residue_scrubbed
+            );
+        }
+        for (path, reason) in &self.residue_unscrubbed {
+            let _ = writeln!(
+                err,
+                "sanitize: residue PRESENT, not scrubbed: {path} ({reason})"
+            );
+        }
+        for what in &self.residue_not_checked {
+            let _ = writeln!(err, "sanitize: residue NOT CHECKED: {what}");
         }
 
         // The honesty clause. §3: never claim more than was achieved.

@@ -10,6 +10,7 @@
 //! run. Every error becomes an `Outcome::Failed` and the walk continues.
 
 use crate::cli::{Config, HardLinkMode, RemoveMode};
+use crate::meta;
 use crate::name;
 use crate::report::{Guarantee, Kind, Outcome, Report};
 use crate::sysx;
@@ -86,19 +87,36 @@ impl<'a> Walker<'a> {
             }
         };
 
+        let st = rustix::fs::statat(
+            parent_fd.as_fd(),
+            name.as_c_str(),
+            AtFlags::SYMLINK_NOFOLLOW,
+        );
+
         // Confine the run to the filesystem the target lives on. §16.2
         if self.cfg.one_file_system
             && self.boundary_dev.is_none()
-            && let Ok(st) = rustix::fs::statat(
-                parent_fd.as_fd(),
-                name.as_c_str(),
-                AtFlags::SYMLINK_NOFOLLOW,
-            )
+            && let Ok(ref s) = st
         {
-            self.boundary_dev = Some(st.st_dev as _);
+            self.boundary_dev = Some(s.st_dev as _);
         }
 
+        let target_is_file = st
+            .as_ref()
+            .map(|s| FileType::from_raw_mode(s.st_mode as _) == FileType::RegularFile)
+            .unwrap_or(false);
+
         self.process(parent_fd.as_fd(), name.as_c_str(), &display, 0);
+
+        // §16.5 — a named *file* leaves its directory's caches behind, and
+        // `.DS_Store` still carries its name. A whole-directory run reaches
+        // these through the ordinary listing, so this covers only the file
+        // case. It is the one place a file target reaches outside itself,
+        // which is why it is reported as residue rather than as a removal.
+        if target_is_file && self.residue_scrubbing_enabled() {
+            let parent_display = parent.display().to_string();
+            self.scrub_directory_caches(parent_fd.as_fd(), &parent_display);
+        }
     }
 
     /// `sanitize -F /` — empty the root without trying to unlink it.
@@ -147,6 +165,12 @@ impl<'a> Walker<'a> {
 
         let st = match rustix::fs::statat(dirfd, name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(st) => st,
+            // Already gone between readdir and here. For a tool whose job is
+            // removal that is success, not failure — and it is the normal
+            // case for a sidecar we destroyed alongside its principal a
+            // moment ago (§16.5), whichever order readdir happened to return
+            // them in.
+            Err(e) if e == rustix::io::Errno::NOENT => return,
             Err(e) => {
                 self.report.record(
                     display,
@@ -485,47 +509,24 @@ impl<'a> Walker<'a> {
             return;
         }
 
+        // §16.5 — the sidecar goes first. Its own filename contains the
+        // principal's, so a run that dies part-way must never leave
+        // `._foo.7z` sitting next to a `foo.7z` that is already gone.
+        if self.residue_scrubbing_enabled() {
+            self.scrub_sidecar_of(dirfd, name, display);
+        }
+
         let size = st.st_size as u64;
         let blksize = st.st_blksize as u64;
 
-        let mut guarantee = Guarantee::Clear;
-        if self.cfg.iterations > 0 || self.cfg.zero {
-            let fd = match self.open_writable(dirfd, name) {
-                Ok(fd) => fd,
-                Err(e) => {
-                    self.report.record(
-                        display,
-                        &Outcome::Failed {
-                            stage: "open",
-                            error: errno_str(e),
-                        },
-                    );
-                    return;
-                }
-            };
-
-            match wipe::wipe_fd(fd.as_fd(), size, blksize, self.cfg, self.rng) {
-                Ok(res) => {
-                    self.report.bytes_written =
-                        self.report.bytes_written.saturating_add(res.bytes_written);
-                    guarantee = res.guarantee;
-                }
-                Err(e) => {
-                    // §7.5 — an unwiped file is NOT deleted. A partially wiped
-                    // file that is still present is recoverable and obvious; a
-                    // partially wiped file that is gone is data loss with no
-                    // security benefit.
-                    self.report.record(
-                        display,
-                        &Outcome::Failed {
-                            stage: "overwrite",
-                            error: format!("{e}; file left in place"),
-                        },
-                    );
-                    return;
-                }
+        let guarantee = match self.wipe_truncate_scrub(dirfd, name, size, blksize, display) {
+            Ok(g) => g,
+            Err((stage, error)) => {
+                self.report
+                    .record(display, &Outcome::Failed { stage, error });
+                return;
             }
-        }
+        };
 
         if self.cfg.keep {
             self.report.record(display, &Outcome::Wiped { guarantee });
@@ -543,6 +544,171 @@ impl<'a> Walker<'a> {
             Err((stage, err)) => self
                 .report
                 .record(display, &Outcome::Failed { stage, error: err }),
+        }
+    }
+
+    /// Residue scrubbing applies only when we are actually deleting. `-k`
+    /// means overwrite *and keep*, so destroying a neighbour's `.DS_Store`
+    /// while carefully preserving the target would be incoherent.
+    fn residue_scrubbing_enabled(&self) -> bool {
+        self.cfg.scrub_sidecars && !self.cfg.keep && !self.cfg.dry_run
+    }
+
+    /// The destructive core for one regular file, up to but not including the
+    /// rename ladder. The ordering is load-bearing (§16.5):
+    ///
+    /// ```text
+    /// overwrite → full_sync → ftruncate(0) → scrub times → [ladder → unlink]
+    /// ```
+    ///
+    /// `ftruncate` updates `mtime`, so the timestamp scrub must follow it or
+    /// the real time goes straight back into the directory entry.
+    fn wipe_truncate_scrub(
+        &mut self,
+        dirfd: BorrowedFd<'_>,
+        name: &CStr,
+        size: u64,
+        blksize: u64,
+        display: &str,
+    ) -> Result<Guarantee, (&'static str, String)> {
+        let mut guarantee = Guarantee::Clear;
+        let wants_overwrite = self.cfg.iterations > 0 || self.cfg.zero;
+        // §16.5 — `-k` keeps the file, so truncating would destroy exactly
+        // what the user asked to preserve.
+        let wants_truncate = self.cfg.truncate_before_unlink && !self.cfg.keep && size > 0;
+
+        if wants_overwrite || wants_truncate {
+            let fd = self
+                .open_writable(dirfd, name)
+                .map_err(|e| ("open", errno_str(e)))?;
+
+            if wants_overwrite {
+                match wipe::wipe_fd(fd.as_fd(), size, blksize, self.cfg, self.rng) {
+                    Ok(res) => {
+                        self.report.bytes_written =
+                            self.report.bytes_written.saturating_add(res.bytes_written);
+                        guarantee = res.guarantee;
+                    }
+                    Err(e) => {
+                        // §7.5 — an unwiped file is NOT deleted. A partially
+                        // wiped file that is still present is recoverable and
+                        // obvious; one that is gone is data loss with no
+                        // security benefit.
+                        return Err(("overwrite", format!("{e}; file left in place")));
+                    }
+                }
+            }
+
+            // §6.3 — the overwrite is rounded up to a whole block so the
+            // file's own tail slack goes with it, and `pwrite` past EOF
+            // *extends* the file to reach that slack. Under `-k` the file
+            // survives, so without this a kept 30-byte file comes back as a
+            // 4 KiB one. Truncating back to the original length keeps the
+            // slack overwritten — those bytes stay on the media, they simply
+            // stop being part of the file — while leaving the size the user
+            // preserved intact. `-x` never grows it, so this is a no-op there.
+            if self.cfg.keep
+                && wants_overwrite
+                && let Err(e) = rustix::fs::ftruncate(fd.as_fd(), size)
+            {
+                self.report.note_residue_unscrubbed(
+                    display,
+                    &format!("restoring length after slack wipe: {}", errno_str(e)),
+                );
+            }
+
+            if wants_truncate {
+                // On FAT/exFAT this rewrites DIR_FileSize and the first
+                // cluster pointer in the *live* directory entry. Unlink only
+                // stamps 0xE5 over the first byte and frees the chain, so
+                // without this the residual entry still carries the exact
+                // size and a pointer to where the data began — precisely what
+                // a carver wants. Same principle as the same-length rename of
+                // §5.2: rewrite the entry while it is still reachable.
+                //
+                // Strictly after wipe_fd's final full_sync. Truncating first
+                // releases the clusters we just wrote, and on a
+                // delayed-allocation filesystem those writes then become dead
+                // stores the kernel is free to discard.
+                if let Err(e) = rustix::fs::ftruncate(fd.as_fd(), 0) {
+                    // Not fatal: the bytes are already overwritten, so this
+                    // costs the dirent scrub, not the data. Record and carry
+                    // on to the unlink.
+                    self.report
+                        .note_residue_unscrubbed(display, &format!("truncate: {}", errno_str(e)));
+                }
+            }
+        }
+
+        // §16.5 — after truncation, never before.
+        if self.cfg.scrub_times
+            && !self.cfg.keep
+            && let Err(e) = meta::scrub_times(dirfd, name, self.rng)
+        {
+            self.report
+                .note_residue_unscrubbed(display, &format!("timestamps: {}", errno_str(e)));
+        }
+
+        Ok(guarantee)
+    }
+
+    /// Destroy the AppleDouble sidecar for `name`, if there is one.
+    fn scrub_sidecar_of(&mut self, dirfd: BorrowedFd<'_>, name: &CStr, display: &str) {
+        let Some(side) = meta::sidecar_of(name.to_bytes()) else {
+            return;
+        };
+        let label = format!("{display} [sidecar]");
+        self.scrub_residue_file(dirfd, side.as_c_str(), &label);
+    }
+
+    /// Full destruction chain for one residue file, accounted separately from
+    /// the files the user named. §16.7.
+    ///
+    /// A missing file is the normal case rather than a problem — most
+    /// directories have no sidecars at all — so `ENOENT` is silent.
+    fn scrub_residue_file(&mut self, dirfd: BorrowedFd<'_>, name: &CStr, display: &str) {
+        let st = match rustix::fs::statat(dirfd, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(st) => st,
+            Err(e) if e == rustix::io::Errno::NOENT => return,
+            Err(e) => {
+                self.report.note_residue_unscrubbed(display, &errno_str(e));
+                return;
+            }
+        };
+        if FileType::from_raw_mode(st.st_mode as _) != FileType::RegularFile {
+            self.report
+                .note_residue_unscrubbed(display, "not a regular file");
+            return;
+        }
+
+        let size = st.st_size as u64;
+        let blksize = st.st_blksize as u64;
+        match self.wipe_truncate_scrub(dirfd, name, size, blksize, display) {
+            Ok(_) => match self.obfuscate_and_remove(dirfd, name, false) {
+                Ok(()) => self.report.note_residue_scrubbed(display),
+                Err((stage, err)) => self
+                    .report
+                    .note_residue_unscrubbed(display, &format!("{stage}: {err}")),
+            },
+            Err((stage, err)) => self
+                .report
+                .note_residue_unscrubbed(display, &format!("{stage}: {err}")),
+        }
+    }
+
+    /// Destroy the directory-level caches that record their neighbours' names.
+    ///
+    /// Called for the directory holding a named *file* target. Whole-directory
+    /// runs reach these through the ordinary listing instead, so this exists
+    /// for the `sanitize ~/notes/a.txt` case, where `~/notes/.DS_Store` still
+    /// names `a.txt` after `a.txt` is gone.
+    fn scrub_directory_caches(&mut self, dirfd: BorrowedFd<'_>, dir_display: &str) {
+        for cache in meta::CACHE_FILES {
+            let Ok(name) = CString::new(*cache) else {
+                continue;
+            };
+            let label = format!("{dir_display}/{cache}");
+            self.scrub_residue_file(dirfd, name.as_c_str(), &label);
         }
     }
 

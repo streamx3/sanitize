@@ -6,6 +6,7 @@
 
 mod cli;
 mod guards;
+mod meta;
 mod name;
 mod report;
 mod size;
