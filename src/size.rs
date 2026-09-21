@@ -50,7 +50,8 @@ pub fn parse(s: &str) -> Result<SizeSpec, String> {
     }
     let base: u64 = num.parse().map_err(|_| format!("size too large: {s}"))?;
 
-    let mult = multiplier(suffix).ok_or_else(|| format!("unknown size suffix {suffix:?} in {s}"))?;
+    let mult =
+        multiplier(suffix).ok_or_else(|| format!("unknown size suffix {suffix:?} in {s}"))?;
 
     base.checked_mul(mult)
         .map(SizeSpec::Bytes)
@@ -135,7 +136,16 @@ mod tests {
 
     #[test]
     fn rejects_garbage_without_panicking() {
-        for bad in ["", "K", "1X", "1KBB", "-5", "abc", "1 2", "99999999999999999999999"] {
+        for bad in [
+            "",
+            "K",
+            "1X",
+            "1KBB",
+            "-5",
+            "abc",
+            "1 2",
+            "99999999999999999999999",
+        ] {
             assert!(parse(bad).is_err(), "should reject {bad:?}");
         }
     }

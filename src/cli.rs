@@ -49,7 +49,12 @@ pub struct Cli {
 
     // ---- shred compatibility -------------------------------------------
     /// Overwrite N times (shred defaults to 3; 1 is sufficient on modern media)
-    #[arg(short = 'n', long = "iterations", value_name = "N", default_value_t = 1)]
+    #[arg(
+        short = 'n',
+        long = "iterations",
+        value_name = "N",
+        default_value_t = 1
+    )]
     pub iterations: u32,
 
     /// Change permissions to allow writing if necessary
@@ -81,7 +86,12 @@ pub struct Cli {
     pub compat_u: bool,
 
     /// How to remove the directory entry
-    #[arg(long = "remove", value_name = "HOW", value_enum, default_value = "wipesync")]
+    #[arg(
+        long = "remove",
+        value_name = "HOW",
+        value_enum,
+        default_value = "wipesync"
+    )]
     pub remove: RemoveMode,
 
     // ---- deletion ------------------------------------------------------
@@ -122,7 +132,12 @@ pub struct Cli {
     pub no_one_file_system: bool,
 
     /// What to do about files with more than one hard link
-    #[arg(long = "hard-links", value_name = "MODE", value_enum, default_value = "skip")]
+    #[arg(
+        long = "hard-links",
+        value_name = "MODE",
+        value_enum,
+        default_value = "skip"
+    )]
     pub hard_links: HardLinkMode,
 
     // ---- reporting -----------------------------------------------------

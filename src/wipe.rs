@@ -9,10 +9,10 @@ use crate::cli::Config;
 use crate::report::Guarantee;
 use crate::sysx;
 use rand::Rng;
-use rand_chacha::rand_core::TryRng;
-use std::convert::Infallible;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::rand_core::TryRng;
+use std::convert::Infallible;
 use std::io::{self, Read};
 use std::os::fd::BorrowedFd;
 
@@ -118,7 +118,11 @@ pub fn plan_extents(size: u64, blksize: u64, cfg: &Config) -> Vec<Extent> {
     if let Some(h) = cfg.head {
         let want = h.resolve(size).min(size);
         if want > 0 {
-            let end = if cfg.exact { want } else { round_up(want, blk).min(full_end) };
+            let end = if cfg.exact {
+                want
+            } else {
+                round_up(want, blk).min(full_end)
+            };
             spans.push((0, end));
         }
     }
@@ -266,7 +270,13 @@ mod tests {
     fn whole_file_by_default_rounded_to_block() {
         let c = cfg(&["sanitize", "x"]);
         let e = plan_extents(5000, 4096, &c);
-        assert_eq!(e, vec![Extent { offset: 0, len: 8192 }]);
+        assert_eq!(
+            e,
+            vec![Extent {
+                offset: 0,
+                len: 8192
+            }]
+        );
     }
 
     #[test]
@@ -274,7 +284,14 @@ mod tests {
         // This is the wipe.c:892 bug, explicitly tested against.
         let c = cfg(&["sanitize", "x"]);
         let e = plan_extents(8192, 4096, &c);
-        assert_eq!(e, vec![Extent { offset: 0, len: 8192 }], "must not add a block");
+        assert_eq!(
+            e,
+            vec![Extent {
+                offset: 0,
+                len: 8192
+            }],
+            "must not add a block"
+        );
     }
 
     #[test]
@@ -282,7 +299,10 @@ mod tests {
         let c = cfg(&["sanitize", "-x", "x"]);
         assert_eq!(
             plan_extents(5000, 4096, &c),
-            vec![Extent { offset: 0, len: 5000 }]
+            vec![Extent {
+                offset: 0,
+                len: 5000
+            }]
         );
     }
 
@@ -291,14 +311,23 @@ mod tests {
         let c = cfg(&["sanitize", "-x", "--head", "1K", "x"]);
         assert_eq!(
             plan_extents(1 << 20, 4096, &c),
-            vec![Extent { offset: 0, len: 1024 }]
+            vec![Extent {
+                offset: 0,
+                len: 1024
+            }]
         );
     }
 
     #[test]
     fn head_is_clamped_to_file_size() {
         let c = cfg(&["sanitize", "-x", "--head", "1G", "x"]);
-        assert_eq!(plan_extents(100, 4096, &c), vec![Extent { offset: 0, len: 100 }]);
+        assert_eq!(
+            plan_extents(100, 4096, &c),
+            vec![Extent {
+                offset: 0,
+                len: 100
+            }]
+        );
     }
 
     #[test]
@@ -325,7 +354,14 @@ mod tests {
     fn head_and_tail_merge_when_they_overlap() {
         let c = cfg(&["sanitize", "-x", "--head", "1M", "--tail", "1M", "x"]);
         let e = plan_extents(1024 * 1024, 4096, &c);
-        assert_eq!(e, vec![Extent { offset: 0, len: 1024 * 1024 }], "one span, not two");
+        assert_eq!(
+            e,
+            vec![Extent {
+                offset: 0,
+                len: 1024 * 1024
+            }],
+            "one span, not two"
+        );
     }
 
     #[test]
@@ -337,7 +373,13 @@ mod tests {
     #[test]
     fn percent_head_resolves_against_size() {
         let c = cfg(&["sanitize", "-x", "--head", "10%", "x"]);
-        assert_eq!(plan_extents(1000, 4096, &c), vec![Extent { offset: 0, len: 100 }]);
+        assert_eq!(
+            plan_extents(1000, 4096, &c),
+            vec![Extent {
+                offset: 0,
+                len: 100
+            }]
+        );
     }
 
     #[test]

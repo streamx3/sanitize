@@ -6,7 +6,7 @@
 //! (§14.7), because it was written for Linux 2.0.
 
 use std::io;
-use std::os::fd::{AsFd, BorrowedFd};
+use std::os::fd::BorrowedFd;
 
 /// Flush this file's data all the way to the media, as far as the OS allows.
 pub fn full_sync(fd: BorrowedFd<'_>) -> io::Result<()> {
@@ -83,7 +83,8 @@ pub fn clear_immutable(fd: BorrowedFd<'_>) -> bool {
             if libc::fstat(raw, &mut st) != 0 {
                 return false;
             }
-            let keep = st.st_flags & !(libc::UF_IMMUTABLE | libc::UF_APPEND | libc::SF_IMMUTABLE | libc::SF_APPEND);
+            let keep = st.st_flags
+                & !(libc::UF_IMMUTABLE | libc::UF_APPEND | libc::SF_IMMUTABLE | libc::SF_APPEND);
             if keep == st.st_flags {
                 return false;
             }
@@ -98,12 +99,15 @@ pub fn clear_immutable(fd: BorrowedFd<'_>) -> bool {
 }
 
 /// Local helper so the raw fd extraction stays in one place.
+/// Only the Apple path needs a raw fd; elsewhere it would be dead code.
+#[cfg(target_vendor = "apple")]
 trait AsRawFdCompat {
     fn as_raw_fd_compat(&self) -> i32;
 }
+#[cfg(target_vendor = "apple")]
 impl AsRawFdCompat for BorrowedFd<'_> {
     fn as_raw_fd_compat(&self) -> i32 {
-        use std::os::fd::AsRawFd;
+        use std::os::fd::{AsFd, AsRawFd};
         self.as_fd().as_raw_fd()
     }
 }

@@ -89,8 +89,11 @@ impl<'a> Walker<'a> {
         // Confine the run to the filesystem the target lives on. §16.2
         if self.cfg.one_file_system
             && self.boundary_dev.is_none()
-            && let Ok(st) =
-                rustix::fs::statat(parent_fd.as_fd(), name.as_c_str(), AtFlags::SYMLINK_NOFOLLOW)
+            && let Ok(st) = rustix::fs::statat(
+                parent_fd.as_fd(),
+                name.as_c_str(),
+                AtFlags::SYMLINK_NOFOLLOW,
+            )
         {
             self.boundary_dev = Some(st.st_dev as _);
         }
@@ -165,7 +168,12 @@ impl<'a> Walker<'a> {
                 // Devices, FIFOs, sockets. Removing them is meaningful;
                 // overwriting them through the tree is not.
                 if self.cfg.dry_run {
-                    self.report.record(display, &Outcome::Planned { kind: Kind::Special });
+                    self.report.record(
+                        display,
+                        &Outcome::Planned {
+                            kind: Kind::Special,
+                        },
+                    );
                     return;
                 }
                 match self.obfuscate_and_remove(dirfd, name, false) {
@@ -176,9 +184,9 @@ impl<'a> Walker<'a> {
                             guarantee: Guarantee::Clear,
                         },
                     ),
-                    Err((stage, err)) => {
-                        self.report.record(display, &Outcome::Failed { stage, error: err })
-                    }
+                    Err((stage, err)) => self
+                        .report
+                        .record(display, &Outcome::Failed { stage, error: err }),
                 }
             }
         }
@@ -269,12 +277,15 @@ impl<'a> Walker<'a> {
         if self.cfg.dry_run {
             drop(fd);
             if survivors == 0 {
-                self.report.record(display, &Outcome::Planned { kind: Kind::Dir });
+                self.report
+                    .record(display, &Outcome::Planned { kind: Kind::Dir });
             } else {
                 self.report.record(
                     display,
                     &Outcome::Skipped {
-                        reason: format!("{survivors} entr(y/ies) would remain; directory would stay"),
+                        reason: format!(
+                            "{survivors} entr(y/ies) would remain; directory would stay"
+                        ),
                     },
                 );
             }
@@ -288,7 +299,9 @@ impl<'a> Walker<'a> {
         drop(fd);
         if remaining != Some(0) {
             let reason = match remaining {
-                Some(n) => format!("{n} entr(y/ies) remain (skipped or failed); directory left in place"),
+                Some(n) => {
+                    format!("{n} entr(y/ies) remain (skipped or failed); directory left in place")
+                }
                 None => "could not confirm the directory is empty; left in place".to_string(),
             };
             self.report.record(display, &Outcome::Skipped { reason });
@@ -306,7 +319,9 @@ impl<'a> Walker<'a> {
                     guarantee: Guarantee::Clear,
                 },
             ),
-            Err((stage, err)) => self.report.record(display, &Outcome::Failed { stage, error: err }),
+            Err((stage, err)) => self
+                .report
+                .record(display, &Outcome::Failed { stage, error: err }),
         }
     }
 
@@ -406,7 +421,12 @@ impl<'a> Walker<'a> {
             return;
         }
         if self.cfg.dry_run {
-            self.report.record(display, &Outcome::Planned { kind: Kind::Symlink });
+            self.report.record(
+                display,
+                &Outcome::Planned {
+                    kind: Kind::Symlink,
+                },
+            );
             return;
         }
 
@@ -419,7 +439,9 @@ impl<'a> Walker<'a> {
                     guarantee: Guarantee::Clear,
                 },
             ),
-            Err((stage, err)) => self.report.record(display, &Outcome::Failed { stage, error: err }),
+            Err((stage, err)) => self
+                .report
+                .record(display, &Outcome::Failed { stage, error: err }),
         }
     }
 
@@ -458,7 +480,8 @@ impl<'a> Walker<'a> {
         }
 
         if self.cfg.dry_run {
-            self.report.record(display, &Outcome::Planned { kind: Kind::File });
+            self.report
+                .record(display, &Outcome::Planned { kind: Kind::File });
             return;
         }
 
@@ -483,7 +506,8 @@ impl<'a> Walker<'a> {
 
             match wipe::wipe_fd(fd.as_fd(), size, blksize, self.cfg, self.rng) {
                 Ok(res) => {
-                    self.report.bytes_written = self.report.bytes_written.saturating_add(res.bytes_written);
+                    self.report.bytes_written =
+                        self.report.bytes_written.saturating_add(res.bytes_written);
                     guarantee = res.guarantee;
                 }
                 Err(e) => {
@@ -516,7 +540,9 @@ impl<'a> Walker<'a> {
                     guarantee,
                 },
             ),
-            Err((stage, err)) => self.report.record(display, &Outcome::Failed { stage, error: err }),
+            Err((stage, err)) => self
+                .report
+                .record(display, &Outcome::Failed { stage, error: err }),
         }
     }
 
@@ -559,7 +585,11 @@ impl<'a> Walker<'a> {
 
         if self.cfg.remove != RemoveMode::Unlink {
             let orig_len = name.to_bytes().len();
-            let steps = name::ladder(orig_len, self.cfg.same_length_rounds, self.cfg.max_rename_steps);
+            let steps = name::ladder(
+                orig_len,
+                self.cfg.same_length_rounds,
+                self.cfg.max_rename_steps,
+            );
             let sync_each = self.cfg.remove == RemoveMode::Wipesync;
 
             for len in steps {
@@ -643,7 +673,11 @@ fn count_entries(fd: BorrowedFd<'_>) -> Option<u64> {
 /// RENAME_EXCL (macOS) makes that impossible; where the kernel lacks it we
 /// fall back to a check-then-rename, which is racy but strictly better than
 /// an unconditional clobber.
-fn rename_noreplace(dirfd: BorrowedFd<'_>, from: &CStr, to: &CStr) -> Result<(), rustix::io::Errno> {
+fn rename_noreplace(
+    dirfd: BorrowedFd<'_>,
+    from: &CStr,
+    to: &CStr,
+) -> Result<(), rustix::io::Errno> {
     match rustix::fs::renameat_with(dirfd, from, dirfd, to, rustix::fs::RenameFlags::NOREPLACE) {
         Ok(()) => Ok(()),
         Err(e)

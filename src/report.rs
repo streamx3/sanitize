@@ -128,12 +128,14 @@ impl Report {
             Outcome::Skipped { reason } => {
                 self.skipped += 1;
                 if self.verbose > 0 {
-                    self.problems.push((path.to_string(), format!("skipped: {reason}")));
+                    self.problems
+                        .push((path.to_string(), format!("skipped: {reason}")));
                 }
             }
             Outcome::Failed { stage, error } => {
                 self.failed += 1;
-                self.problems.push((path.to_string(), format!("{stage}: {error}")));
+                self.problems
+                    .push((path.to_string(), format!("{stage}: {error}")));
             }
         }
         self.emit(path, outcome);
@@ -142,14 +144,21 @@ impl Report {
     fn emit(&self, path: &str, outcome: &Outcome) {
         if self.json {
             let (status, detail) = match outcome {
-                Outcome::Removed { kind, guarantee } => {
-                    ("removed", format!("\"kind\":\"{}\",\"guarantee\":\"{}\"", kind.as_str(), guarantee.as_str()))
-                }
+                Outcome::Removed { kind, guarantee } => (
+                    "removed",
+                    format!(
+                        "\"kind\":\"{}\",\"guarantee\":\"{}\"",
+                        kind.as_str(),
+                        guarantee.as_str()
+                    ),
+                ),
                 Outcome::Wiped { guarantee } => {
                     ("wiped", format!("\"guarantee\":\"{}\"", guarantee.as_str()))
                 }
                 Outcome::Planned { kind } => ("planned", format!("\"kind\":\"{}\"", kind.as_str())),
-                Outcome::Skipped { reason } => ("skipped", format!("\"reason\":{}", json_str(reason))),
+                Outcome::Skipped { reason } => {
+                    ("skipped", format!("\"reason\":{}", json_str(reason)))
+                }
                 Outcome::Failed { stage, error } => (
                     "failed",
                     format!("\"stage\":\"{stage}\",\"error\":{}", json_str(error)),
@@ -182,7 +191,11 @@ impl Report {
                 );
             }
             Outcome::Wiped { guarantee } if self.verbose > 0 => {
-                let _ = writeln!(std::io::stderr(), "sanitize: {path}: wiped ({})", guarantee.as_str());
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "sanitize: {path}: wiped ({})",
+                    guarantee.as_str()
+                );
             }
             _ => {}
         }
@@ -248,7 +261,10 @@ impl Report {
         // The honesty clause. §3: never claim more than was achieved.
         match self.weakest {
             Some(Guarantee::Purge) => {
-                let _ = writeln!(err, "sanitize: sanitization level: purge (overwrite reached the media)");
+                let _ = writeln!(
+                    err,
+                    "sanitize: sanitization level: purge (overwrite reached the media)"
+                );
             }
             Some(Guarantee::Clear) => {
                 let _ = writeln!(
@@ -259,7 +275,7 @@ impl Report {
             Some(Guarantee::Unverifiable) => {
                 let _ = writeln!(
                     err,
-                    "sanitize: sanitization level: clear (overwrite UNVERIFIABLE on this filesystem/device — run --explain)"
+                    "sanitize: sanitization level: clear (overwrite UNVERIFIABLE on this filesystem/device)"
                 );
             }
             None => {}
@@ -296,9 +312,17 @@ mod tests {
         r.note_guarantee(Guarantee::Purge);
         assert_eq!(r.weakest, Some(Guarantee::Purge));
         r.note_guarantee(Guarantee::Clear);
-        assert_eq!(r.weakest, Some(Guarantee::Clear), "must degrade, never upgrade");
+        assert_eq!(
+            r.weakest,
+            Some(Guarantee::Clear),
+            "must degrade, never upgrade"
+        );
         r.note_guarantee(Guarantee::Purge);
-        assert_eq!(r.weakest, Some(Guarantee::Clear), "must not be upgraded back");
+        assert_eq!(
+            r.weakest,
+            Some(Guarantee::Clear),
+            "must not be upgraded back"
+        );
         r.note_guarantee(Guarantee::Unverifiable);
         assert_eq!(r.weakest, Some(Guarantee::Unverifiable));
     }
