@@ -327,6 +327,18 @@ the run that relied on it.
 | `2` | usage error | **shipped** |
 | `3` | refused for safety, nothing touched | **shipped** |
 
+### 6.1 Signals
+
+`SIGINT`, `SIGTERM` and `SIGHUP` stop the run at the next safe point — between
+directory entries, or between overwrite passes and chunks — then print the summary and exit 1.
+A file caught mid-overwrite is **left in place** and reported, never deleted (§7.5): its contents
+are part random and part original, and deleting it would destroy the record of which.
+
+A **second `SIGINT`** restores the default disposition and re-raises, killing the process
+immediately and forfeiting the summary. That is the documented cost of insisting, and no worse
+than the `kill -9` it replaces. Only `SIGINT` escalates: a closing terminal can deliver `SIGHUP`
+*and* `SIGTERM`, which is the system saying one thing twice rather than a user asking twice.
+
 ---
 
 ## 7. Implementation delta against `src/` as it stands

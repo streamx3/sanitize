@@ -83,6 +83,9 @@ pub struct Report {
     pub residue_scrubbed: u64,
     residue_unscrubbed: Vec<(String, String)>,
     residue_not_checked: Vec<String>,
+    /// §16.1 item 5 — set when a signal cut the run short, so the summary can
+    /// say the counts below are a partial account rather than a final one.
+    pub interrupted: bool,
 }
 
 impl Report {
@@ -103,6 +106,7 @@ impl Report {
             residue_scrubbed: 0,
             residue_unscrubbed: Vec::new(),
             residue_not_checked: Vec::new(),
+            interrupted: false,
         }
     }
 
@@ -237,14 +241,17 @@ impl Report {
         // §16.7 — residue we found and left behind is the same kind of
         // incompleteness as a skipped entry: the job is not done, and a
         // script that reads exit 0 as "done" would be misled.
-        self.failed > 0 || self.skipped > 0 || !self.residue_unscrubbed.is_empty()
+        self.failed > 0
+            || self.skipped > 0
+            || !self.residue_unscrubbed.is_empty()
+            || self.interrupted
     }
 
     /// Always printed, including after SIGINT. §16.1 item 5.
     pub fn summary(&self, dry_run: bool) {
         if self.json {
             let line = format!(
-                "{{\"summary\":true,\"files\":{},\"dirs\":{},\"symlinks\":{},\"wiped_only\":{},\"planned\":{},\"skipped\":{},\"failed\":{},\"bytes_written\":{},\"guarantee\":\"{}\",\"residue_scrubbed\":{},\"residue_unscrubbed\":{},\"residue_not_checked\":{}}}",
+                "{{\"summary\":true,\"files\":{},\"dirs\":{},\"symlinks\":{},\"wiped_only\":{},\"planned\":{},\"skipped\":{},\"failed\":{},\"bytes_written\":{},\"guarantee\":\"{}\",\"residue_scrubbed\":{},\"residue_unscrubbed\":{},\"residue_not_checked\":{},\"interrupted\":{}}}",
                 self.removed_files,
                 self.removed_dirs,
                 self.removed_symlinks,
@@ -256,7 +263,8 @@ impl Report {
                 self.weakest.map(Guarantee::as_str).unwrap_or("none"),
                 self.residue_scrubbed,
                 self.residue_unscrubbed.len(),
-                self.residue_not_checked.len()
+                self.residue_not_checked.len(),
+                self.interrupted
             );
             let _ = writeln!(std::io::stdout(), "{line}");
             return;
@@ -265,6 +273,14 @@ impl Report {
         let mut err = std::io::stderr();
         if !self.problems.is_empty() && self.verbose == 0 {
             let _ = writeln!(err);
+        }
+
+        if self.interrupted {
+            let _ = writeln!(
+                err,
+                "sanitize: INTERRUPTED — stopped at a safe point. The counts below are what \n\
+                 sanitize: was completed, not what was asked for; anything not listed is untouched."
+            );
         }
 
         if dry_run {

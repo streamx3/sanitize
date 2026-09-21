@@ -44,7 +44,14 @@ original, and the comparisons in `doc/COMPARISON.md` are factual observations
 about published behaviour. MIT is therefore unencumbered. If you would rather
 the project be GPL, change both the `LICENSE` file and `Cargo.toml` together.
 
-### 3. SIGINT is not handled — Ctrl-C leaves no record
+### 3. SIGINT is not handled — Ctrl-C leaves no record — **DONE**
+
+> Implemented in `src/interrupt.rs`. The handler bumps an atomic and nothing
+> else; the walker polls between directory entries and the wipe engine between
+> passes and between 1 MiB chunks. Exit 1, summary always printed, and a
+> partially overwritten file is left in place and reported per §7.5. Covered by
+> `tests/interrupt.rs`. The original description follows for the record.
+
 
 There is no signal handler anywhere in `src/`. Default disposition terminates the
 process immediately, so Ctrl-C during a long run over slow media kills it

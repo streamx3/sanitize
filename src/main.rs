@@ -6,6 +6,7 @@
 
 mod cli;
 mod guards;
+mod interrupt;
 mod meta;
 mod name;
 mod report;
@@ -26,6 +27,9 @@ const EXIT_REFUSED: u8 = 3;
 
 fn main() -> ExitCode {
     install_panic_hook();
+    // §16.1 item 5 — before anything can be destroyed, so there is no window
+    // in which Ctrl-C kills the process without a summary.
+    interrupt::install();
 
     let cli = cli::Cli::parse();
     let cfg = match cli::Config::from_cli(&cli) {
@@ -70,9 +74,15 @@ fn main() -> ExitCode {
     {
         let mut walker = walk::Walker::new(&cfg, &mut rng, &mut rep);
         for path in &cli.paths {
+            // Between targets is the coarsest safe point; the walker and the
+            // wipe engine hold the finer ones.
+            if interrupt::requested() {
+                break;
+            }
             walker.run(path);
         }
     }
+    rep.interrupted = interrupt::requested();
     rep.summary(cfg.dry_run);
 
     // Exit 0 must mean "the job is done". A skipped entry is deliberate, but

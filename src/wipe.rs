@@ -6,6 +6,7 @@
 //! use case in §2.
 
 use crate::cli::Config;
+use crate::interrupt;
 use crate::report::Guarantee;
 use crate::sysx;
 use rand::Rng;
@@ -185,6 +186,14 @@ pub fn wipe_fd(
 
     let zero_pass = if cfg.zero { 1 } else { 0 };
     for pass in 0..(cfg.iterations + zero_pass) {
+        // §16.1 item 5 — between passes is a safe point: the file is either
+        // fully overwritten by the previous pass or not started at all.
+        if interrupt::requested() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "interrupted between passes",
+            ));
+        }
         let is_zero_pass = cfg.zero && pass == cfg.iterations;
         if is_zero_pass {
             buf.iter_mut().for_each(|b| *b = 0);
@@ -193,6 +202,16 @@ pub fn wipe_fd(
         for ext in &extents {
             let mut written: u64 = 0;
             while written < ext.len {
+                // Mid-file, so *not* a safe point: the caller must leave this
+                // file in place and say so (§7.5). Checked per chunk rather
+                // than per byte — a 1 MiB write is the granularity at which
+                // Ctrl-C feels responsive on slow media.
+                if interrupt::requested() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "interrupted part-way through an overwrite",
+                    ));
+                }
                 let remaining = ext.len - written;
                 let chunk = remaining.min(BUF_SIZE as u64) as usize;
                 let slice = match buf.get_mut(..chunk) {

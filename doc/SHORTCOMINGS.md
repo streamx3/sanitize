@@ -358,6 +358,18 @@ achieved and the help text should not imply it is.
 but no flag or key reaches them today. Low priority; noted so it is not mistaken for a deliberate
 omission.
 
+### 8.9b The second-Ctrl-C escalation is unverified
+
+`interrupt::escalates` is unit-tested and the graceful path has four integration tests, but the
+re-raise itself was never reached in testing: on this hardware the graceful stop completes in well
+under a millisecond, so the process is gone before a second signal can be delivered after the first
+handler returns. Four hundred signals at 1 ms intervals did not reach it.
+
+That is a good sign about responsiveness and a bad one about coverage. The path exists for slow
+removable flash, where a single chunk write or `fsync` can take long enough that a user wants out
+before the next checkpoint — which is exactly the hardware CI does not have. Treat it as
+**[unknown]** until someone runs it against a real USB 2.0 stick.
+
 ### 8.9a Residue accounting depends on readdir order
 
 In a whole-directory run a sidecar may be reached either by its principal (counted as residue) or

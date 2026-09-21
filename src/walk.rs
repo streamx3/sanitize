@@ -10,6 +10,7 @@
 //! run. Every error becomes an `Outcome::Failed` and the walk continues.
 
 use crate::cli::{Config, HardLinkMode, RemoveMode};
+use crate::interrupt;
 use crate::meta;
 use crate::name;
 use crate::report::{Guarantee, Kind, Outcome, Report};
@@ -394,6 +395,20 @@ impl<'a> Walker<'a> {
         let before_failed = self.report.failed;
         let before_skipped = self.report.skipped;
         for n in &names {
+            // §16.1 item 5 — the checkpoint lives here rather than in
+            // `process` because this is where the loop is: between entries the
+            // tree is in a state we can describe, inside one it is not. The
+            // directory is then left in place by the emptiness re-check in
+            // `process_dir`, which is exactly right.
+            if interrupt::requested() {
+                self.report.record(
+                    display,
+                    &Outcome::Skipped {
+                        reason: "interrupted; the rest of this directory is untouched".into(),
+                    },
+                );
+                break;
+            }
             let child = format!("{display}/{}", n.to_string_lossy());
             self.process(fd, n.as_c_str(), &child, depth.saturating_add(1));
         }
@@ -588,6 +603,19 @@ impl<'a> Walker<'a> {
                         self.report.bytes_written =
                             self.report.bytes_written.saturating_add(res.bytes_written);
                         guarantee = res.guarantee;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                        // §16.1 item 5 with §7.5. The overwrite stopped
+                        // mid-file, so the contents are part random and part
+                        // original. Deleting it now would destroy the record
+                        // of which — the precise state the robustness rule
+                        // exists to prevent — so it stays, loudly.
+                        return Err((
+                            "interrupted",
+                            "overwrite stopped part-way; file left in place, contents partially \
+                             destroyed"
+                                .to_string(),
+                        ));
                     }
                     Err(e) => {
                         // §7.5 — an unwiped file is NOT deleted. A partially
