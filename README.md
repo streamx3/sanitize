@@ -81,6 +81,9 @@ On those, `sanitize` achieves *clear* (the data is unreachable through the files
 so, rather than claiming *purge*. If you need a real guarantee, the answer is cryptographic
 erasure or whole-device sanitization, not this tool. `doc/DESIGN.md` §2 explains at length.
 
+[doc/SHORTCOMINGS.md](doc/SHORTCOMINGS.md) is the full inventory: what gets destroyed without
+being named, what survives anyway, and which assumptions cannot be checked from userspace.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).

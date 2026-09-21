@@ -18,6 +18,7 @@ who is allowed to set it.
 | Category | Question it answers | May be set by |
 |---|---|---|
 | **Scope** | *Which bytes get destroyed?* | **command line only** |
+| **Out-of-tree residue** | *Which well-known OS artefacts outside the target go too?* | config or CLI, **always disclosed** |
 | **Thoroughness** | *How completely are the already-chosen bytes destroyed?* | config or command line |
 | **Ceremony** | *How much do we ask, and how much do we print?* | config or command line |
 
@@ -54,7 +55,36 @@ That is the whole answer to "how exactly should this work". Not a blocklist of d
 those rot, and the next flag gets forgotten. A structural property: **there is no config key for
 scope, so there is nothing to blocklist.**
 
-### 0.3 The corollary about `-F`
+### 0.3 The residue carve-out, stated honestly
+
+The first draft of this document classified `--scrub-sidecars` and `--scrub-volume` as
+thoroughness. That was wrong by this document's own test: `sanitize /Volumes/STICK/folder` with
+volume scrubbing on destroys `/Volumes/STICK/.fseventsd`, which is not under the named path. It
+changes *which* bytes die, so by §0 it is scope, and scope is command-line-only — which would
+contradict the §16.4 decision that these default to on.
+
+The rule needs a second clause rather than an exception:
+
+> Scope is a setting whose additional byte set is **not enumerable from the command line**.
+
+Symlink following and mount crossing fail that test: what they destroy depends on where links
+point and what happens to be mounted, neither knowable from the invocation. Residue scrubbing
+passes it: the set is a fixed, documented list of OS-generated paths at a computable location.
+You can read `SHORTCOMINGS.md` §1.1 and know exactly what it will touch.
+
+So residue scrubbing is its own category — outside the tree, but bounded — and it is config-legal
+on that basis, not by pretending it stays inside the target. Two obligations come with the
+carve-out:
+
+1. **It is always disclosed**, per §5.4, on every run that touches anything outside the named
+   paths. A bounded set is only knowable if we say which members we hit.
+2. **`$RECYCLE.BIN` and `.Trashes` are the weak members.** Their *paths* are enumerable, but their
+   *contents* are arbitrary user files of unbounded size, possibly written by a different person on
+   a different machine. They stay in by the §16.4 threat model — a trashed file is a recoverable
+   copy of exactly what you asked to destroy — but they are the one place where "bounded" means
+   bounded in location only. Reported as a distinct class.
+
+### 0.4 The corollary about `-F`
 
 `-F` is dangerous today not because it is aggressive but because it is a **bundle that mixes
 categories**: it permits dangerous paths *(scope)*, follows symlinks *(scope)*, crosses mount
@@ -130,8 +160,6 @@ These change how completely the chosen bytes die. None can add a path to the des
 | `--no-recursive` | recursive | `recursive` | **shipped** |
 | `--no-scrub-times` | scrubbing on | `scrub_times` | **new** |
 | `--no-truncate` | truncating on | `truncate_before_unlink` | **new** |
-| `--no-scrub-sidecars` | scrubbing on | `scrub_sidecars` | **new** |
-| `--no-scrub-volume` | scrubbing on | `scrub_volume` | **new** |
 | `--scrub-dirents` | off | `scrub_dirents` | **designed** (DESIGN §5.4) |
 | `--verify` | off | `verify` | **designed** |
 | `--range A:B` | — | — | **designed** (DESIGN §4.2) |
@@ -139,6 +167,21 @@ These change how completely the chosen bytes die. None can add a path to the des
 
 `--no-recursive` is thoroughness rather than scope: it can only ever *shrink* the set. Settings
 that shrink the set are always safe to put in config; only expansion is restricted.
+
+---
+
+## 2a. Out-of-tree residue — config or command line, always disclosed
+
+Bounded and enumerable (`SHORTCOMINGS.md` §1.1), but outside the named target. See §0.3.
+
+| Flag | Default | Config key | Status |
+|---|---|---|---|
+| `--no-scrub-sidecars` | scrubbing on | `scrub_sidecars` | **new** |
+| `--no-scrub-volume` | scrubbing on | `scrub_volume` | **new** |
+
+Even the AppleDouble sidecar escapes the named path when the target is a single *file*:
+`sanitize ~/notes/a.txt` must reach `~/notes/._a.txt`, a sibling rather than a child. All three
+residue classes share that property, which is why they share a category.
 
 ---
 

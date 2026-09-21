@@ -250,6 +250,24 @@ that makes `force_everything` structurally inexpressible in config.
 dependency. Every destructive run prints which layers were in effect and where each non-default
 setting came from. DESIGN §16.6.
 
+### 23. Expose a library target — P2
+
+`Cargo.toml` declares no `[lib]`, there is no `src/lib.rs`, and every module is private
+(`main.rs:7-14`). Nothing in this repo is consumable by another crate, so a GUI front-end or
+`blktamper` integration cannot reuse `name.rs`, `size.rs`, `plan_extents`, `guards.rs` or the
+`Guarantee` model as things stand. Add `src/lib.rs`, make the modules `pub`, reduce `main.rs` to
+argument handling plus a call in. Mechanical, and cheaper before a consumer exists than after.
+See [SHORTCOMINGS.md](SHORTCOMINGS.md) §6.
+
+### 24. Settle the FAT dirent assumptions — P1
+
+Eight assumptions the design relies on and cannot verify from userspace
+([SHORTCOMINGS.md](SHORTCOMINGS.md) §4). Rows 1-4 are FAT/exFAT-specific and therefore the
+highest-value experiments here. Row 3 decides whether the ladder's same-length first step — which
+the whole of DESIGN §5.2 rests on — does anything at all. Row 4 (the 8.3 short-name alias) may
+show that a mangled form of the original filename survives every rename, in which case the §5
+claims need correcting rather than defending.
+
 ### Open questions
 
 Tracked in [REFERENCE.md](REFERENCE.md) §8; the `-f` vs `-F` question is resolved there (§4.1 —
