@@ -177,6 +177,93 @@ entries would use proportional memory. Acceptable for now; note it.
 
 ---
 
+## Decided 2026-09-21 — metadata, residue and config
+
+Governing principle recorded in DESIGN.md §16.4: **aggression is the default.** The operator is
+assumed competent and to have a reason. Guards that ask *"did you mean this path?"* stay; guards
+that ask *"are you sure you want it this thoroughly gone?"* are removed.
+
+Ordered by value per line of code.
+
+### 16. Truncate to 0 before unlink — P0
+
+~5 lines. `ftruncate(fd, 0)` after `wipe_fd`'s final `full_sync`, before `close`, gated on
+`!cfg.keep`. Today the residual FAT32 dirent keeps `DIR_FileSize` (0x1C) and the first cluster
+(0x14/0x1A) — the exact size and a pointer to where the data began. exFAT: `DataLength`,
+`ValidDataLength`, `FirstCluster` in the Stream Extension entry. Unlink sets `0xE5` and frees the
+chain but does not scrub those fields.
+
+Same mechanism as the §5.2 same-length rename: rewrite the dirent while it is still live, because
+once it is slack it is unreachable. Verify with a hex dump of the dirent before/after on a
+loopback image — this is P1.5's forensic test and it is what proves the change earns its keep.
+
+### 17. `--scrub-times`, on by default — P0
+
+Inverse is `--no-scrub-times`. `utimensat` on `atime`/`mtime` before unlink. **Not** the Unix
+epoch: FAT's epoch starts 1980-01-01, so `0` clamps and the clamp is itself a signature. Random
+value in a plausible window. Create time unsettable from POSIX — macOS `setattrlist(ATTR_CMN_CRTIME)`,
+Linux reports it as unfixable residue. DESIGN §9.4 designed this; nothing in `src/` implements it.
+
+### 18. AppleDouble sidecars — P0
+
+`._<name>` carries `com.apple.quarantine` (source URL, timestamp, downloading app) on FAT/exFAT,
+where macOS has no native xattrs. **The sidecar's own filename contains the principal's name**,
+which defeats the entire §5.2 ladder.
+
+Current live bug: `sanitize /Volumes/STICK/foo.7z` (single-file target) leaves `._foo.7z` naming
+the file and holding its download URL. Whole-directory runs already destroy it incidentally.
+Process the sidecar *before* its principal.
+
+### 19. `--scrub-sidecars`, on by default — P1
+
+`.DS_Store`, `Thumbs.db`, `ehthumbs.db`, `desktop.ini` in any directory touched. `.DS_Store` is a
+buddy-allocated B-tree that does not compact, so it **retains records for files already deleted** —
+an on-disk list of names that used to be there. `Thumbs.db` is an OLE compound file holding
+*rendered thumbnails*: content recovery, not metadata leakage, and the strongest item on the list.
+
+### 20. `--scrub-volume`, on by default — P1
+
+Inverse `--no-scrub-volume`. `.fseventsd`, `.Spotlight-V100`, `.Trashes`, `._.Trashes`,
+`$RECYCLE.BIN`, `System Volume Information`, `.TemporaryItems`, `LOST.DIR`, `FOUND.*`, `*.CHK`.
+(`lost+found` is ext-only and not relevant on the priority filesystems.)
+
+`.fseventsd` is the reason this is default-on rather than opt-in: it holds gzip'd records of
+**full paths plus event masks** for everything that ever changed on the volume. Plaintext, readable
+with `zcat`. The §5.2 ladder protects one name in one 32-byte dirent while `.fseventsd` holds the
+same name in the clear — without this, the ladder is theatre on any volume that has touched a Mac.
+
+Must run **last** (our own unlinks generate the records we are removing) and cannot fully win while
+mounted — see §16.5.1. Needs volume-root identification, a subset of the `fsinfo` work in P2.9.
+
+### 21. Residue reporting — P1
+
+Three states per residue class: `scrubbed` / `present, not scrubbed` (with reason) / `not checked`.
+Unscrubbed residue referencing a destroyed path sets exit 1, by the same argument `main.rs:75`
+already makes for skipped entries. DESIGN §16.7.
+
+### 22. Config file — P2
+
+`hardcoded < /etc/sanitize/default.conf < CLI`. Flat `key = value`, parsed in-tree, no TOML
+dependency. Every destructive run prints which layers were in effect and where each non-default
+setting came from. DESIGN §16.6.
+
+### Open questions
+
+- **`-f` vs `-F`.** DESIGN §16.3 reserves `-f` for shred compatibility (chmod only); `-F` is
+  force-everything. `sanitize -f /` as written would still be refused — `-f` does not bypass the
+  root guard today. Decide whether the warn-and-wait skip binds to `-F`, to a new flag, or whether
+  `-f` is being redefined and shred compatibility dropped.
+- **Warn-and-wait is new.** No prompt or countdown exists anywhere in `src/` today; dangerous paths
+  are refused outright (exit 3) and `-F` is documented as "no prompt, no countdown". Adding a gate
+  changes the §16.3 contract — confirm the intended interaction.
+- **Config file trust.** Orthogonal to §16.4: the aggression principle is about not
+  second-guessing *the user*, whereas a group- or world-writable `/etc/sanitize/default.conf` lets
+  a *third party* rewrite someone else's invocation. Suggest refusing a config that is not owned by
+  root (for `/etc`) or not `0644`-or-tighter, and reporting the refusal rather than ignoring it.
+  Needs a decision.
+- **Per-user config layer.** Only three layers were specified. Whether `~/.config/sanitize/config`
+  sits between `/etc` and the CLI is undecided.
+
 ## Publishing checklist (crates.io)
 
 The name `sanitize` was free on crates.io, Homebrew, Debian's file index and as a

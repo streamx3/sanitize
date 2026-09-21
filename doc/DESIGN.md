@@ -988,3 +988,99 @@ symlinks plus no mount boundary, run as root against `/`, will destroy every mou
 reachable from the tree — external drives, network shares, Time Machine targets — because the
 symlink and the mount boundary were the only things scoping it. This is the documented purpose
 of the flag. `--dry-run` composes with `-F` and is the recommended way to confirm scope first.
+
+### 16.4 Operator assumption: aggression is the default
+
+Decided 2026-09-21. Supersedes any reading of §5.4, §7.4 or §9 that leaves recoverable residue
+in place for the user's protection.
+
+`sanitize` assumes a competent operator who has a reason. It does not assume a casual user who
+will regret the run. Someone relying on a file in `$RECYCLE.BIN` or `.Trashes` surviving a
+hard-cleaning tool — so that it can be carried to another system — does not have a workflow
+worth protecting; they have an OpSec failure. A tool that leaves recoverable copies of the data
+it was told to destroy has failed at its only job.
+
+The distinction that governs every default below:
+
+> Refusing a **target** protects the user from a mistake. Refusing to scrub the **residue of a
+> target they named** protects them from their own stated intent. Only the first is our business.
+
+So the guards that stay are the ones answering *"did you mean this path?"* — dangerous-root
+refusal, mount containment, the symlink boundary, hard-link skipping. The guards that go are the
+ones answering *"are you sure you want it this thoroughly gone?"* There is no such question;
+that is what the user asked for.
+
+Warn-and-wait remains for dangerous targets and is the only interactive gate. A force flag skips
+it, and the config file may set it skipped by default. Once the target is accepted, nothing
+further is withheld.
+
+### 16.5 Metadata and residue: defaults
+
+All **on** by default, each with a `--no-` inverse. None of this is gated behind `-F`: it is not
+extra destruction, it is the destruction the user already asked for, finished properly.
+
+| Behaviour | Disable with | What it removes |
+|---|---|---|
+| Timestamp scrub | `--no-scrub-times` | `atime`/`mtime` before unlink, so the residual dirent carries no real time |
+| Truncate before unlink | `--no-truncate` | rewrites size and first-cluster in the *live* dirent; without it both survive in dirent slack |
+| Sidecar scrub | `--no-scrub-sidecars` | AppleDouble `._<name>`, `.DS_Store`, `Thumbs.db`, `ehthumbs.db`, `desktop.ini` |
+| Volume residue scrub | `--no-scrub-volume` | `.fseventsd`, `.Spotlight-V100`, `.Trashes`, `._.Trashes`, `$RECYCLE.BIN`, `System Volume Information`, `.TemporaryItems`, `LOST.DIR`, `FOUND.*`, `*.CHK` |
+
+Ordering constraints, all load-bearing:
+
+* `ftruncate(0)` goes **after** `wipe_fd`'s final `full_sync` and **before** `close`. Earlier than
+  the sync and the random writes become dead stores the kernel may legally discard; earlier than
+  the overwrite and the clusters are freed before there is anything to overwrite.
+* Truncation is gated on `!cfg.keep`. `-k` means overwrite *and keep*; truncating there would
+  destroy the file the user explicitly preserved.
+* The AppleDouble sidecar is processed **before** its principal, so a run that dies part-way never
+  leaves `._foo.7z` naming a `foo.7z` that is already gone. Note the sidecar's own filename
+  embeds the principal's name, which otherwise defeats the entire §5.2 ladder.
+* Volume residue is scrubbed **last**, after every target — it has to be, because our own unlinks
+  generate the event records we are trying to remove. See §16.5.1.
+* Timestamp scrub cannot use the Unix epoch. FAT's epoch begins 1980-01-01, so `0` is
+  unrepresentable and clamps, which is itself a signature. Use a random value in a plausible
+  window. Create time is not settable from POSIX; on macOS use `setattrlist(ATTR_CMN_CRTIME)`,
+  and on Linux record it as an unfixable residue (FAT has no ctime field at all, so §9.4's
+  ctime caveat is moot on the priority filesystems).
+
+#### 16.5.1 The residue window is real, and is reported rather than hidden
+
+`.fseventsd` is written by the OS while the volume is mounted, including in response to our own
+unlinks. Scrubbing it last narrows the window; it does not close it, because the daemon buffers
+and may flush after we finish. We therefore cannot claim a *mounted* volume is clean of event
+residue, and must not. The report states that the window exists and recommends unmounting
+immediately. Pretending otherwise is precisely the overclaim this project exists to avoid.
+
+### 16.6 Configuration precedence
+
+```
+hardcoded defaults  <  /etc/sanitize/default.conf  <  user input (CLI)
+```
+
+Later overrides earlier; the CLI always wins. A config file may set any default in §16.5,
+including turning warn-and-wait off.
+
+Every run that destroys anything prints which layers were in effect and which non-default
+settings came from where, so a surprising outcome is always traceable to the line that caused it.
+A destructive tool that can be silently reconfigured is a destructive tool that can silently lie
+about what it did — the same defect class as printing "securely erased".
+
+Format is flat `key = value`, parsed in-tree. No TOML dependency: the crate denies `unwrap`,
+`expect` and `panic`, and a config parser does not justify a new supply-chain edge.
+
+### 16.7 Residue reporting: three states, never two
+
+Every residue class is reported as exactly one of:
+
+| State | Meaning |
+|---|---|
+| `scrubbed` | found and destroyed |
+| `present, not scrubbed` | found, deliberately left, **with the reason** (flag off, `EACCES`, unsupported) |
+| `not checked` | we did not look — e.g. the volume root could not be identified |
+
+Collapsing these into silence is the failure this rule exists to prevent. Silence is
+indistinguishable from success, so a user cannot tell "there was no residue" from "we never
+looked". Unscrubbed residue that references a destroyed path counts as an incomplete run and
+sets exit 1, by the same reasoning `main.rs` already applies to skipped entries: exit 0 must mean
+the job is done.
