@@ -20,8 +20,9 @@ pure functions (size parsing, name invariants, extent planning, timestamp bounds
 integration tests in `tests/residue.rs` that drive the real binary against real directories and
 cover the §16.5 chain. Everything *else* destructive — symlink policy, hard links, the rename
 ladder's effect on disk, exit codes — was verified by hand once during the v0.1 session and is
-captured nowhere. The forensic loopback test that would demonstrate an overwrite reaches the media
-(DESIGN §11, TODO P1.5) is still unwritten, so no claim below about *media* is tested at all.
+captured nowhere. The forensic loopback test (DESIGN §11, TODO P1.5) now exists as `ci/fs-forensics.sh` and runs
+in CI on vfat, exfat and ext4 — see §4.1 for what it has established. Claims about *devices*
+below remain untested and mostly untestable in software.
 
 So each claim below is one of:
 
@@ -161,6 +162,34 @@ Each line is something the design **relies on** and which **cannot be confirmed 
 because every check goes through the same filesystem driver whose behaviour is in question. The
 only way to settle any of them is to read the raw block device and compare. That is the boundary
 between this repo and a block-level tool.
+
+### 4.1 Measured 2026-09-21
+
+`ci/fs-forensics.sh` writes a canary to a scratch image, destroys it with `sanitize`, unmounts,
+and reads the **raw image**. Results so far:
+
+| Filesystem | Canary in raw image | Original filename in raw image |
+|---|---|---|
+| **exFAT** (loop + `exfat-fuse`) | **0** — the overwrite reached the image | **0** — the §5.2 ladder left no trace |
+| **ext4** (loop) | **0** | **17** — survives, exactly as DESIGN §5.3 predicts |
+
+The ext4 result is the more useful of the two: it is a documented limitation demonstrated rather
+than asserted. Renaming does not overwrite the old directory entry, and the name lives on in
+slack. The script therefore *reports* the filename count and only fails on the canary — failing
+on the name would be claiming a guarantee the design does not make.
+
+Two caveats on the exFAT row. `exfat-fuse` is a userspace reimplementation, so it answers "what
+does exfat-fuse do", not "what does every exFAT driver do" — one leg of the matrix, not the
+matrix. And a clean result on a freshly-made 64 MiB image says nothing about a stick that has
+been written and rewritten for years.
+
+**FAT32 is not reachable in a Claude Cloud session at all**: the kernel (`6.18.44-fc-v37`,
+Firecracker) has no `vfat`, `msdos` or `exfat`, there is no `/lib/modules`, and there is no
+`modprobe`. `mkfs.vfat` works because it is userspace; `mount -t vfat` cannot. GitHub Actions
+runners *do* have kernel vfat, so CI covers FAT32 even though the development environment cannot.
+See `CLAUDE.md` §2.
+
+### 4.2 Still assumed
 
 | # | Assumption | If false |
 |---|---|---|

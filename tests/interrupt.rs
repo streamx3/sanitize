@@ -17,7 +17,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::sleep;
@@ -66,6 +66,25 @@ fn assert_still_running(child: &mut Child, what: &str) {
         "{what} finished before it could be interrupted — enlarge the \
          workload rather than lengthening the sleep"
     );
+}
+
+/// Block until the walk has actually destroyed something, rather than guessing
+/// with a fixed sleep.
+///
+/// A fixed sleep has two failure modes and a loaded machine can hit either:
+/// the run finishes early, or it has not reached the tree yet and the signal
+/// interrupts nothing. Polling for real progress removes the second one, and
+/// `assert_still_running` covers the first.
+fn wait_for_progress(dir: &Path, total: usize, child: &mut Child) -> usize {
+    for _ in 0..250 {
+        let left = fs::read_dir(dir).map(|d| d.count()).unwrap_or(total);
+        if left < total {
+            return left;
+        }
+        assert_still_running(child, "the walk");
+        sleep(Duration::from_millis(20));
+    }
+    panic!("no entries were destroyed within 5s — is the walk running at all?");
 }
 
 /// A signal arriving mid-overwrite. The file is part random and part original,
@@ -135,8 +154,8 @@ fn interrupt_between_entries_stops_the_walk_and_still_summarises() {
         .spawn()
         .unwrap();
 
-    sleep(Duration::from_millis(300));
-    assert_still_running(&mut child, "the walk");
+    // Interrupt only once the walk has demonstrably started destroying things.
+    wait_for_progress(s.path(), FILES, &mut child);
     signal(&child, "-INT");
 
     let out = child.wait_with_output().unwrap();

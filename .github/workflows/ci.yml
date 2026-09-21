@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    # macOS is not optional here. clear_immutable's UF_IMMUTABLE/SF_IMMUTABLE
+    # branch, F_FULLFSYNC, and AsRawFdCompat are all behind
+    # #[cfg(target_vendor = "apple")] and are never type-checked on Linux.
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-targets
+
+  forensics:
+    # The honest core of the project (DESIGN §11): destroy a file on a real
+    # filesystem, then read the raw image to see what actually survived. A
+    # claim about the page cache is not a claim about the media.
+    name: loopback forensics
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # vfat is the priority filesystem and needs a kernel that has it —
+        # which GitHub runners do and Claude Cloud does not (CLAUDE.md §2).
+        # ext4 is included because it is expected to *keep* the old filename:
+        # DESIGN §5.3 says the ladder cannot overwrite directory-entry slack,
+        # and a test that demonstrates the documented limit is worth as much
+        # as one that demonstrates the guarantee.
+        fs: [vfat, exfat, ext4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install filesystem tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dosfstools exfatprogs exfat-fuse
+      - run: cargo build --release
+      - name: ${{ matrix.fs }} loopback forensic test
+        run: sudo --preserve-env=SANITIZE_BIN ./ci/fs-forensics.sh ${{ matrix.fs }}
+        env:
+          SANITIZE_BIN: ${{ github.workspace }}/target/release/sanitize

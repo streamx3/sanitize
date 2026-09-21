@@ -91,7 +91,13 @@ Hand-verified during the v0.1 session, currently unguarded against regression:
 - guards refuse `/`, `$HOME`, `/usr`, and textual `..` tricks; `-F` permits them
 - `--head`/`--tail` leave the middle of a file bit-for-bit untouched
 
-### 5. The forensic test from DESIGN.md §11 is unwritten
+### 5. The forensic test from DESIGN.md §11 is unwritten — **DONE**
+
+> `ci/fs-forensics.sh`, in CI on vfat/exfat/ext4. Measured results in
+> [SHORTCOMINGS.md](SHORTCOMINGS.md) §4.1: the canary is gone from the raw image on both exFAT
+> and ext4, and the *filename* survives 17 times on ext4 — §5.3 demonstrated rather than
+> asserted.
+
 
 Nothing currently proves an overwrite reaches the media at all. The test that
 would:
@@ -110,7 +116,13 @@ Per DESIGN.md §14.7: run `wipe` and `sanitize` over identical trees on a loopba
 FAT image, compare surviving bytes and directory entries. A 27-year-old
 independent implementation agreeing with ours is worth more than any unit test.
 
-### 7. No CI
+### 7. No CI — **DONE**
+
+> `.github/workflows/ci.yml`: fmt + clippy on Linux; `cargo test` on Linux **and macOS** (the
+> `target_vendor = "apple"` branches — `clear_immutable`, `F_FULLFSYNC`, `AsRawFdCompat` — have
+> never been type-checked otherwise); and `ci/fs-forensics.sh` across vfat, exfat and ext4.
+> Tests that need real hardware are in [HARDWARE-TESTS.md](HARDWARE-TESTS.md).
+
 
 No `.github/workflows/`. Wanted: `cargo test`, `cargo clippy -- -D warnings`,
 `cargo fmt --check` on macOS and Linux, plus the loopback tests on Linux only.
