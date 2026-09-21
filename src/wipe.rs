@@ -278,11 +278,10 @@ fn pwrite_all(fd: BorrowedFd<'_>, buf: &[u8], offset: u64) -> io::Result<u64> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::cli::{Cli, Config};
-    use clap::Parser as _;
+    use crate::cli::Config;
 
     fn cfg(args: &[&str]) -> Config {
-        Config::from_cli(&Cli::try_parse_from(args).unwrap()).unwrap()
+        Config::from_args(args).unwrap()
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //!   §3     never print "securely erased"; print what actually happened
 
 mod cli;
+mod config_file;
 mod guards;
 mod interrupt;
 mod meta;
@@ -15,7 +16,7 @@ mod sysx;
 mod walk;
 mod wipe;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use report::Report;
 use std::process::ExitCode;
 
@@ -31,14 +32,46 @@ fn main() -> ExitCode {
     // in which Ctrl-C kills the process without a summary.
     interrupt::install();
 
-    let cli = cli::Cli::parse();
-    let cfg = match cli::Config::from_cli(&cli) {
+    // The derive alone cannot tell a typed `-n 1` from the default `-n 1`, and
+    // config precedence depends on knowing which it was. REFERENCE §5.1.
+    let matches = cli::Cli::command().get_matches();
+    let cli = match cli::Cli::from_arg_matches(&matches) {
+        Ok(c) => c,
+        Err(e) => e.exit(),
+    };
+
+    // hardcoded defaults < /etc/sanitize/default.conf < command line.
+    // The file is read and trusted: a permission check would protect nothing,
+    // since anyone who can write it can replace this binary. REFERENCE §5.5.
+    let conf = if cli.no_config {
+        None
+    } else {
+        let explicit = cli.config.is_some();
+        let path = cli.config.as_deref().unwrap_or(config_file::SYSTEM_PATH);
+        match config_file::ConfigFile::load(path) {
+            Ok(Some(c)) => Some(c),
+            // A missing /etc file is the normal case. A missing file the user
+            // named by hand is a typo they need to hear about.
+            Ok(None) if explicit => {
+                eprintln!("sanitize: {path}: no such configuration file");
+                return ExitCode::from(EXIT_USAGE);
+            }
+            Ok(None) => None,
+            Err(e) => {
+                eprintln!("sanitize: {e}");
+                return ExitCode::from(EXIT_USAGE);
+            }
+        }
+    };
+
+    let (cfg, provenance) = match cli::Config::resolve(&cli, &matches, conf.as_ref()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("sanitize: {e}");
             return ExitCode::from(EXIT_USAGE);
         }
     };
+    disclose(conf.as_ref(), &provenance);
 
     // §7.4 — refuse dangerous targets before anything is destroyed, so a
     // refusal is always exit 3 with nothing touched.
@@ -92,6 +125,48 @@ fn main() -> ExitCode {
         ExitCode::from(EXIT_FAILURES)
     } else {
         ExitCode::from(EXIT_OK)
+    }
+}
+
+/// §5.4 — say which layers were in effect and where each non-default setting
+/// came from, so a surprising run is traceable to the line that caused it.
+///
+/// Only when a config file actually contributed something: with no config in
+/// play the command line is already in front of the user, and repeating it back
+/// is noise rather than disclosure.
+fn disclose(conf: Option<&config_file::ConfigFile>, p: &cli::Provenance) {
+    let Some(conf) = conf else {
+        // No file in play, so the command line is the whole story and is
+        // already in front of the user. Repeating it back is noise.
+        return;
+    };
+    if conf.is_empty() {
+        return;
+    }
+
+    let applied = &p.from_config;
+    let overridden: Vec<&str> = conf
+        .keys()
+        .into_iter()
+        .filter(|k| !applied.iter().any(|a| a == k))
+        .collect();
+
+    eprintln!(
+        "sanitize: config: {} ({})",
+        conf.path,
+        if applied.is_empty() {
+            "nothing applied".to_string()
+        } else {
+            applied.join(", ")
+        }
+    );
+    if !overridden.is_empty() {
+        // Say it explicitly. A setting that is in the file but not in effect is
+        // exactly the thing an operator misreads as active.
+        eprintln!(
+            "sanitize: config: overridden on the command line ({})",
+            overridden.join(", ")
+        );
     }
 }
 

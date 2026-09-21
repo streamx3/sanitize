@@ -273,7 +273,13 @@ Three states per residue class: `scrubbed` / `present, not scrubbed` (with reaso
 Unscrubbed residue referencing a destroyed path sets exit 1, by the same argument `main.rs:75`
 already makes for skipped entries. DESIGN §16.7.
 
-### 22. Config file — P2
+### 22. Config file — P2 — **DONE**
+
+> `src/config_file.rs` + `Config::resolve`. Flat `key = value`, parsed in-tree, no new dependency.
+> Scope keys are a hard error naming the line; unknown keys likewise, so a typo cannot read as
+> "off". Disclosure names the file, what it applied, and what the command line overrode.
+> `tests/config.rs` covers precedence in both directions and that nothing is destroyed before a
+> bad config is rejected.
 
 Full specification in [REFERENCE.md](REFERENCE.md) §5, including the scope/thoroughness split
 that makes `force_everything` structurally inexpressible in config.

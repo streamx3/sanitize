@@ -4,8 +4,12 @@
 //! `-u` which is our default. Two deliberate divergences, both documented in
 //! §4.1: `-n` defaults to 1 rather than 3, and deletion is the default.
 
+use crate::config_file::ConfigFile;
 use crate::size::{self, SizeSpec};
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::parser::ValueSource;
+use clap::{ArgAction, ArgMatches, Parser, ValueEnum};
+#[cfg(test)]
+use clap::{CommandFactory, FromArgMatches};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum RemoveMode {
@@ -145,14 +149,35 @@ pub struct Cli {
     #[arg(long = "no-scrub-times")]
     pub no_scrub_times: bool,
 
+    /// Scrub atime/mtime (the default; use this to override a config file)
+    #[arg(long = "scrub-times", conflicts_with = "no_scrub_times")]
+    pub scrub_times: bool,
+
     /// Do not truncate to zero before unlinking (leaves size and first
     /// cluster recoverable in the directory entry on FAT/exFAT)
     #[arg(long = "no-truncate")]
     pub no_truncate: bool,
 
+    /// Truncate to zero before unlinking (the default; overrides a config file)
+    #[arg(long = "truncate", conflicts_with = "no_truncate")]
+    pub truncate: bool,
+
     /// Keep sidecar and cache files: ._* AppleDouble, .DS_Store, Thumbs.db
     #[arg(long = "no-scrub-sidecars")]
     pub no_scrub_sidecars: bool,
+
+    /// Scrub sidecar and cache files (the default; overrides a config file)
+    #[arg(long = "scrub-sidecars", conflicts_with = "no_scrub_sidecars")]
+    pub scrub_sidecars: bool,
+
+    // ---- configuration (REFERENCE §5) -----------------------------------
+    /// Read this file instead of /etc/sanitize/default.conf
+    #[arg(long = "config", value_name = "PATH")]
+    pub config: Option<String>,
+
+    /// Ignore the system configuration file entirely
+    #[arg(long = "no-config")]
+    pub no_config: bool,
 
     // ---- reporting -----------------------------------------------------
     /// Emit one JSON object per path plus a summary
@@ -187,63 +212,293 @@ pub struct Config {
     pub max_rename_steps: usize,
 }
 
+/// Where each non-default setting came from, so a surprising run is always
+/// traceable to the line that caused it. REFERENCE §5.4.
+#[derive(Debug, Clone, Default)]
+pub struct Provenance {
+    /// Keys the file actually supplied. The file's own path is carried by the
+    /// `ConfigFile`, so it is not duplicated here.
+    pub from_config: Vec<String>,
+    pub from_cli: Vec<String>,
+}
+
+/// True when this argument was actually typed, rather than left at its default.
+/// The derive alone cannot tell the two apart, and precedence depends on it.
+fn given(m: &ArgMatches, id: &str) -> bool {
+    matches!(m.value_source(id), Some(ValueSource::CommandLine))
+}
+
+/// Resolve a `--x` / `--no-x` pair into an explicit choice; off wins a tie.
+fn pair(m: &ArgMatches, on: &str, off: &str) -> Option<bool> {
+    if given(m, off) {
+        Some(false)
+    } else if given(m, on) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// Resolve a single-direction flag: present means the flag's own value.
+fn flag(m: &ArgMatches, id: &str, value: bool) -> Option<bool> {
+    given(m, id).then_some(value)
+}
+
+/// An explicit flag wins, then the file, then the hardcoded default.
+///
+/// `explicit` is `None` when the user said nothing either way. A setting that
+/// is on by default needs *both* spellings — `--no-x` to turn it off and `--x`
+/// to turn it back on over a config file that did — because a command line
+/// that can only move a setting one way cannot win, and REFERENCE §5.1 says it
+/// always wins.
+fn pick_bool(
+    explicit: Option<bool>,
+    conf: Option<&ConfigFile>,
+    key: &str,
+    default: bool,
+    prov: &mut Provenance,
+) -> bool {
+    if let Some(v) = explicit {
+        return v;
+    }
+    if let Some(v) = conf.and_then(|c| c.bool(key)) {
+        prov.from_config.push(key.to_string());
+        return v;
+    }
+    default
+}
+
 impl Config {
-    pub fn from_cli(cli: &Cli) -> Result<Self, String> {
+    /// Resolve hardcoded defaults < config file < command line. REFERENCE §5.1.
+    ///
+    /// Scope settings — `-F`, symlink following, mount crossing, hard links —
+    /// are read from `cli` only and never consulted in `conf`, because there is
+    /// no config key for them to come from (REFERENCE §0).
+    pub fn resolve(
+        cli: &Cli,
+        m: &ArgMatches,
+        conf: Option<&ConfigFile>,
+    ) -> Result<(Self, Provenance), String> {
+        let mut prov = Provenance::default();
+        for id in [
+            "iterations",
+            "force_perms",
+            "exact",
+            "zero",
+            "keep",
+            "remove",
+            "head",
+            "tail",
+            "size",
+            "random_source",
+            "no_recursive",
+            "no_scrub_times",
+            "scrub_times",
+            "no_truncate",
+            "truncate",
+            "no_scrub_sidecars",
+            "scrub_sidecars",
+            "dry_run",
+            "verbose",
+            "json",
+            "force_everything",
+            "no_one_file_system",
+            "hard_links",
+        ] {
+            if given(m, id) {
+                prov.from_cli.push(id.to_string());
+            }
+        }
+
         // -s is shred's spelling of --head. If both are given they must agree.
-        let head = match (cli.head, cli.size) {
+        let cli_head = match (cli.head, cli.size) {
             (Some(h), Some(s)) if h != s => {
                 return Err("--head and -s/--size disagree; they are the same option".into());
             }
             (Some(h), _) => Some(h),
             (None, s) => s,
         };
+        let head = match cli_head {
+            Some(h) => Some(h),
+            None => match conf.and_then(|c| c.text("head")) {
+                Some(v) => {
+                    prov.from_config.push("head".into());
+                    Some(size::parse(v)?)
+                }
+                None => None,
+            },
+        };
+        let tail = match cli.tail {
+            Some(t) => Some(t),
+            None => match conf.and_then(|c| c.text("tail")) {
+                Some(v) => {
+                    prov.from_config.push("tail".into());
+                    Some(size::parse(v)?)
+                }
+                None => None,
+            },
+        };
 
-        if cli.zero && head.is_some() {
+        let iterations = if given(m, "iterations") {
+            cli.iterations
+        } else if let Some(v) = conf.and_then(|c| c.u32("iterations")) {
+            prov.from_config.push("iterations".into());
+            v
+        } else {
+            cli.iterations
+        };
+
+        let verbose = if given(m, "verbose") {
+            cli.verbose
+        } else if let Some(v) = conf.and_then(|c| c.u8("verbose")) {
+            prov.from_config.push("verbose".into());
+            v
+        } else {
+            cli.verbose
+        };
+
+        let remove = if given(m, "remove") {
+            cli.remove
+        } else if let Some(v) = conf.and_then(|c| c.text("remove")) {
+            prov.from_config.push("remove".into());
+            match v {
+                "unlink" => RemoveMode::Unlink,
+                "wipe" => RemoveMode::Wipe,
+                _ => RemoveMode::Wipesync,
+            }
+        } else {
+            cli.remove
+        };
+
+        let random_source = match &cli.random_source {
+            Some(s) => Some(s.clone()),
+            None => conf.and_then(|c| c.text("random_source")).map(|s| {
+                prov.from_config.push("random_source".into());
+                s.to_string()
+            }),
+        };
+
+        let keep = pick_bool(flag(m, "keep", cli.keep), conf, "keep", false, &mut prov);
+        let exact = pick_bool(flag(m, "exact", cli.exact), conf, "exact", false, &mut prov);
+        let zero = pick_bool(flag(m, "zero", cli.zero), conf, "zero", false, &mut prov);
+        let dry_run = pick_bool(
+            flag(m, "dry_run", cli.dry_run),
+            conf,
+            "dry_run",
+            false,
+            &mut prov,
+        );
+        let json = pick_bool(flag(m, "json", cli.json), conf, "json", false, &mut prov);
+        let force_perms = pick_bool(
+            flag(m, "force_perms", cli.force_perms),
+            conf,
+            "force_perms",
+            false,
+            &mut prov,
+        ) || cli.force_everything;
+        let recursive = pick_bool(
+            pair(m, "compat_r", "no_recursive"),
+            conf,
+            "recursive",
+            true,
+            &mut prov,
+        );
+        // §16.5 — on by default. Each carries both spellings so the command
+        // line can move it either way over a config file that set it.
+        let scrub_times = pick_bool(
+            pair(m, "scrub_times", "no_scrub_times"),
+            conf,
+            "scrub_times",
+            true,
+            &mut prov,
+        );
+        let truncate_before_unlink = pick_bool(
+            pair(m, "truncate", "no_truncate"),
+            conf,
+            "truncate_before_unlink",
+            true,
+            &mut prov,
+        );
+        let scrub_sidecars = pick_bool(
+            pair(m, "scrub_sidecars", "no_scrub_sidecars"),
+            conf,
+            "scrub_sidecars",
+            true,
+            &mut prov,
+        );
+
+        let same_length_rounds = conf
+            .and_then(|c| c.usize("same_length_rounds"))
+            .inspect(|_| prov.from_config.push("same_length_rounds".into()))
+            .unwrap_or(2);
+        let max_rename_steps = conf
+            .and_then(|c| c.usize("max_rename_steps"))
+            .inspect(|_| prov.from_config.push("max_rename_steps".into()))
+            .unwrap_or(16);
+
+        if zero && head.is_some() {
             // §2.6 — zeros are exactly the entropy edge --head exists to avoid.
             eprintln!(
                 "sanitize: warning: -z writes a zero pass over a partial overwrite, creating the \
                  distinguishable boundary that --head is meant to prevent"
             );
         }
-
-        if cli.iterations > 1 {
+        if iterations > 1 {
             // §15.4 — on flash the FTL redirects every pass to fresh pages.
             eprintln!(
-                "sanitize: warning: -n {} multiplies wear and time; extra passes land on different \
-                 physical pages on any flash device and destroy nothing the first pass missed",
-                cli.iterations
+                "sanitize: warning: -n {iterations} multiplies wear and time; extra passes land on \
+                 different physical pages on any flash device and destroy nothing the first pass \
+                 missed"
             );
         }
 
-        Ok(Config {
-            iterations: cli.iterations,
-            force_perms: cli.force_perms || cli.force_everything,
-            random_source: cli.random_source.clone(),
-            verbose: cli.verbose,
-            exact: cli.exact,
-            zero: cli.zero,
-            remove: cli.remove,
-            keep: cli.keep,
-            recursive: !cli.no_recursive,
+        let cfg = Config {
+            iterations,
+            force_perms,
+            random_source,
+            verbose,
+            exact,
+            zero,
+            remove,
+            keep,
+            recursive,
             head,
-            tail: cli.tail,
-            dry_run: cli.dry_run,
+            tail,
+            dry_run,
+            // ---- scope: command line only, never read from `conf` ----------
             force_everything: cli.force_everything,
-            // §16.2: contained by default; -F removes the boundary.
             one_file_system: !cli.no_one_file_system && !cli.force_everything,
-            // §16.2/§16.3: never follow by default; -F follows and destroys targets.
             follow_symlinks: cli.force_everything,
             hard_links: cli.hard_links,
-            // §16.5 — all on by default; each has a --no- inverse. These are
-            // not extra destruction, they are the destruction already asked
-            // for, finished properly.
-            scrub_times: !cli.no_scrub_times,
-            truncate_before_unlink: !cli.no_truncate,
-            scrub_sidecars: !cli.no_scrub_sidecars,
-            json: cli.json,
-            same_length_rounds: 2,
-            max_rename_steps: 16,
-        })
+            // ----------------------------------------------------------------
+            scrub_times,
+            truncate_before_unlink,
+            scrub_sidecars,
+            json,
+            same_length_rounds,
+            max_rename_steps,
+        };
+        Ok((cfg, prov))
+    }
+
+    /// Test helper: resolve argv with no configuration file in play.
+    #[cfg(test)]
+    pub fn from_args(args: &[&str]) -> Result<Self, String> {
+        let m = Cli::command()
+            .try_get_matches_from(args)
+            .map_err(|e| e.to_string())?;
+        let cli = Cli::from_arg_matches(&m).map_err(|e| e.to_string())?;
+        Self::resolve(&cli, &m, None).map(|(c, _)| c)
+    }
+
+    /// Test helper: resolve argv against a configuration file.
+    #[cfg(test)]
+    pub fn from_args_with(args: &[&str], conf: &ConfigFile) -> Result<(Self, Provenance), String> {
+        let m = Cli::command()
+            .try_get_matches_from(args)
+            .map_err(|e| e.to_string())?;
+        let cli = Cli::from_arg_matches(&m).map_err(|e| e.to_string())?;
+        Self::resolve(&cli, &m, Some(conf))
     }
 
     pub fn partial(&self) -> bool {
@@ -257,8 +512,7 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Config {
-        let cli = Cli::try_parse_from(args).unwrap();
-        Config::from_cli(&cli).unwrap()
+        Config::from_args(args).unwrap()
     }
 
     #[test]
@@ -290,10 +544,82 @@ mod tests {
         assert_eq!(c.head, Some(SizeSpec::Bytes(1024 * 1024)));
     }
 
+    fn conf(text: &str) -> ConfigFile {
+        ConfigFile::parse(text, "test.conf").unwrap()
+    }
+
+    /// hardcoded < file < command line. The middle layer is the whole point:
+    /// without it the file may as well not exist, and if it wins over the
+    /// command line the call site stops meaning what it says.
+    #[test]
+    fn precedence_runs_hardcoded_then_file_then_command_line() {
+        let c = conf("iterations = 7\nscrub_times = false\nremove = wipe");
+
+        // Nothing on the command line: the file wins over the defaults.
+        let (cfg, prov) = Config::from_args_with(&["sanitize", "x"], &c).unwrap();
+        assert_eq!(cfg.iterations, 7);
+        assert!(!cfg.scrub_times);
+        assert_eq!(cfg.remove, RemoveMode::Wipe);
+        assert!(prov.from_config.contains(&"iterations".to_string()));
+
+        // Explicit flags beat the file, every time.
+        let (cfg, _) = Config::from_args_with(&["sanitize", "-n", "2", "x"], &c).unwrap();
+        assert_eq!(cfg.iterations, 2, "the command line must win");
+        assert!(!cfg.scrub_times, "untouched keys still come from the file");
+    }
+
+    /// A default-valued flag is not an explicit one. `-n 1` typed by hand must
+    /// beat a file saying 7, even though 1 is also the hardcoded default —
+    /// this is what the ArgMatches plumbing exists for.
+    #[test]
+    fn a_flag_typed_at_its_default_value_still_wins() {
+        let c = conf("iterations = 7");
+        let (cfg, _) = Config::from_args_with(&["sanitize", "-n", "1", "x"], &c).unwrap();
+        assert_eq!(
+            cfg.iterations, 1,
+            "an explicit -n 1 is not the same as no -n"
+        );
+    }
+
+    /// REFERENCE §0: config may change how thoroughly the chosen bytes die,
+    /// never which bytes are chosen. There is no key for any of these, so a
+    /// file cannot reach them even by accident.
+    #[test]
+    fn a_config_file_can_never_widen_scope() {
+        let c = conf("iterations = 3\nkeep = true");
+        let (cfg, _) = Config::from_args_with(&["sanitize", "x"], &c).unwrap();
+        assert!(!cfg.force_everything);
+        assert!(cfg.one_file_system, "mount containment stays on");
+        assert!(!cfg.follow_symlinks, "symlinks stay unfollowed");
+        assert_eq!(cfg.hard_links, HardLinkMode::Skip);
+    }
+
+    /// The residue defaults are §16.5's, and the file can turn each one off
+    /// individually without touching the others.
+    #[test]
+    fn residue_settings_come_through_the_file_one_at_a_time() {
+        let (cfg, _) =
+            Config::from_args_with(&["sanitize", "x"], &conf("scrub_sidecars = false")).unwrap();
+        assert!(!cfg.scrub_sidecars);
+        assert!(cfg.scrub_times, "unrelated defaults must not move");
+        assert!(cfg.truncate_before_unlink);
+    }
+
+    /// SHORTCOMINGS §8.8 — these were hardcoded and unreachable.
+    #[test]
+    fn ladder_tuning_is_reachable_from_the_file() {
+        let (cfg, _) = Config::from_args_with(
+            &["sanitize", "x"],
+            &conf("same_length_rounds = 4\nmax_rename_steps = 8"),
+        )
+        .unwrap();
+        assert_eq!(cfg.same_length_rounds, 4);
+        assert_eq!(cfg.max_rename_steps, 8);
+    }
+
     #[test]
     fn contradictory_head_and_size_is_rejected() {
-        let cli = Cli::try_parse_from(["sanitize", "-s", "1K", "--head", "2K", "x"]).unwrap();
-        assert!(Config::from_cli(&cli).is_err());
+        assert!(Config::from_args(&["sanitize", "-s", "1K", "--head", "2K", "x"]).is_err());
     }
 
     #[test]
