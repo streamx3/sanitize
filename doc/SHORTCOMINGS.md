@@ -263,3 +263,102 @@ Ordered by how much the answer would change the design.
 4. **Differential oracle against `wipe`** (DESIGN §14.7, TODO P1.6).
 5. **Whether `.fseventsd` records our own deletions**, and how long the flush window is. Determines
    whether §16.5.1's warning is a footnote or the headline.
+
+---
+
+## 8. Concerns not tracked anywhere else
+
+Recorded 2026-09-21 at the point where implementation starts. Nothing here is a blocker for the
+FAT-first work; several are traps that would otherwise be discovered by stepping in them.
+
+### 8.1 A symlinked target argument bypasses the dangerous-path guard entirely
+
+`guards::check()` runs on the textual path and deliberately does not canonicalise
+(`guards.rs:63`). `sanitize /tmp/l` where `l -> /` is therefore **allowed**: the guard sees
+`/tmp/l`, which is not in the refused list.
+
+Not exploitable today — `follow_symlinks` is reachable only through `-F`, and `-F` permits `/`
+anyway, so nothing is gained. **But it becomes a real hole the moment `--follow-symlinks` exists
+as a standalone flag**, which is precisely the deferred work: `sanitize --follow-symlinks /tmp/l`
+would destroy `/` without `--no-preserve-root` ever firing.
+
+The guard's safety currently rests on the symlink *policy*, not on the guard. Whoever implements
+`--follow-symlinks` must re-check the resolved target against `guards::check()` after resolution,
+not only before. This is the single most important note in this section.
+
+### 8.2 Timestamp scrub must run *after* truncation, not before
+
+`ftruncate` updates `mtime`. Scrubbing timestamps and then truncating puts the real current time
+straight back into the dirent, silently undoing the scrub. The correct order is:
+
+```
+overwrite → full_sync → ftruncate(0) → scrub times → rename ladder → unlink
+```
+
+DESIGN §16.5's ordering constraints do not say this. They should.
+
+### 8.3 The parent directory's mtime dates the run
+
+`rename` and `unlink` update the *parent directory's* mtime, not the file's. When the parent
+survives — deleting selected files from a directory that stays — its mtime says "something happened
+here, at this second". Unavoidable while the directory exists and we are writing into it; worth
+stating rather than discovering. Scrubbing the parent's mtime afterwards is possible but would lie
+about a directory the user did not ask us to touch.
+
+### 8.4 Block rounding is a large write amplifier on FAT
+
+`plan_extents` rounds up to `st_blksize`, which on FAT is the **cluster size** — commonly 4 KiB but
+legitimately up to 64 KiB on large volumes. A 1-byte file therefore costs a full-cluster write. Ten
+thousand small files on a 32 KiB-cluster volume is ~320 MiB of writes instead of ~10 KiB, which on
+USB 2.0 flash is minutes rather than seconds, plus the wear.
+
+This is deliberate — it wipes the file's own tail slack — and `-x/--exact` disables it. But it is
+not documented as a cost anywhere, and on the priority filesystems it is the difference between a
+fast run and a slow one.
+
+### 8.5 Mount-point roots are not guarded, contrary to DESIGN §7.4
+
+§7.4 lists "any mount point root" among the paths to guard. `guards.rs` does not implement it:
+the refused set is a fixed list of exact paths plus `$HOME`. `sanitize /Volumes/STICK` runs with no
+warning at all.
+
+For the primary use case that is almost certainly correct — wiping a removable volume is the point
+of the tool. But spec and code disagree, and one of them should move. Recommendation: leave the
+code, correct §7.4, and let warn-and-wait cover it once that exists.
+
+### 8.6 `--scrub-volume` needs to read above the named target
+
+Finding the volume root from a subdirectory means walking up until `st_dev` changes — i.e.
+`stat`ing directories the user did not name, possibly without permission to do so. That is benign
+(a read, not a write) but it is the first time the tool looks outside its target, and it can fail
+in ways that must report `not checked` rather than silently scrubbing nothing. Part of why this
+item is deferred; the rest is that it cannot be done correctly on a mounted volume at all (§16.5.1).
+
+### 8.7 `-z` is largely defeated by the rest of the pipeline
+
+`-z` exists to "hide shredding" by leaving zeros rather than noise. But a zero-filled,
+zero-length, randomly-named dirent in a directory of other randomly-named dirents is not
+inconspicuous — the *pattern* is the signature, not the byte values. `-z` still has a legitimate
+use (some media compress zeros, and a zero pass is cheaper to verify) but its stated purpose is not
+achieved and the help text should not imply it is.
+
+### 8.8 Ladder tuning is hardcoded and unreachable
+
+`same_length_rounds: 2` and `max_rename_steps: 16` are set literally in `Config::from_cli`
+(`cli.rs:207-208`). They are thoroughness settings by REFERENCE.md §0 and should be config keys,
+but no flag or key reaches them today. Low priority; noted so it is not mistaken for a deliberate
+omission.
+
+### 8.9 The tree is not green
+
+`cargo clippy -- -D warnings` **fails** (dead code, `sysx.rs:101`) and `cargo fmt --check` **fails**
+(36 diffs across 6 files). TODO P1.7 asks for CI running both; as things stand that CI would be red
+on its first run. Fix before adding the workflow, not after.
+
+### 8.10 Documentation has outrun the code
+
+At the point this was written: ~2,000 lines of design documentation against 2,386 lines of Rust,
+zero integration tests, and every destructive behaviour verified by hand exactly once. Every
+decision recorded in DESIGN §16.4-16.7, REFERENCE.md and this file is specified against code with
+no regression protection. The FAT-first goal is achievable; "perfect for FAT32 and exFAT" is not
+claimable until §4 rows 1-4 are settled and TODO P1.4's integration tests exist.

@@ -1037,6 +1037,9 @@ Ordering constraints, all load-bearing:
   the overwrite and the clusters are freed before there is anything to overwrite.
 * Truncation is gated on `!cfg.keep`. `-k` means overwrite *and keep*; truncating there would
   destroy the file the user explicitly preserved.
+* **Timestamps are scrubbed after truncation, never before.** `ftruncate` updates `mtime`, so
+  scrubbing first puts the real current time straight back into the dirent. The full order is:
+  `overwrite → full_sync → ftruncate(0) → scrub times → rename ladder → unlink`.
 * The AppleDouble sidecar is processed **before** its principal, so a run that dies part-way never
   leaves `._foo.7z` naming a `foo.7z` that is already gone. Note the sidecar's own filename
   embeds the principal's name, which otherwise defeats the entire §5.2 ladder.
